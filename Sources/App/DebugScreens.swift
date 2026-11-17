@@ -122,10 +122,16 @@ struct DebugHost: View {
                 if let id = store.insert(pages, title: "Sample document \(index + 1)") { ids.append(id) }
             }
         }
-        for id in ids { await store.recognizeText(docID: id) }
         seeded = ids
+        // Text recognition is slow on a CI simulator, so only the screen that shows recognised text waits for it.
+        if screen == "text", ids.indices.contains(1) { await store.recognizeText(docID: ids[1]) }
         ready = true
+        for id in ids where !(screen == "text" && id == ids[safe: 1]) { await store.recognizeText(docID: id) }
     }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
 
 /// A plain generated page, used only when no sample photographs are installed.
