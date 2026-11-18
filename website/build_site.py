@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = Path(os.environ.get("FOLIA_SITE_OUT") or ROOT / "website" / "folia")
 LEGAL = ROOT / "docs" / "legal"
 BASE = "https://ecomswiftllc.github.io/folia/"
-UPDATED = "2026-11-17"
+UPDATED = "2026-11-18"
 SITE_NAME = "PDF Scanner & Editor: Folia"
 
 
@@ -99,10 +99,10 @@ def header(root):
 
 def footer(root):
     return f"""<footer class="site-footer"><div class="wrap">
-<div><h2>PDF Scanner &amp; Editor: Folia</h2><p>A free document scanner and PDF toolkit for iPhone. Your documents stay on your device.</p></div>
+<div><h2>PDF Scanner &amp; Editor: Folia</h2><p>A free document scanner and PDF toolkit for iPhone and iPad. Your documents stay on your device.</p></div>
 <nav aria-label="Footer"><h2>Pages</h2><ul><li><a href="{root or './'}">Home</a></li><li><a href="{root}support/">Support</a></li><li><a href="{root}privacy/">Privacy policy</a></li><li><a href="{root}terms/">Terms of use</a></li></ul></nav>
 <div><h2>Ecom Swift LLC</h2><p>30 N Gould St #37906<br>Sheridan, WY 82801<br>United States</p><p class="email">{html.escape(SUPPORT_EMAIL)}</p></div>
-<p class="legalline">&copy; 2026 Ecom Swift LLC. Apple, iPhone and the App Store are trademarks of Apple Inc. Folia is not affiliated with Apple or Google.</p>
+<p class="legalline">&copy; 2026 Ecom Swift LLC. Apple, iPhone, iPad and the App Store are trademarks of Apple Inc. Folia is not affiliated with Apple or Google.</p>
 </div></footer>
 </body>
 </html>
@@ -115,7 +115,7 @@ FAQ = [
     ("Do I need an account?", "<p>No. There is no sign-in and no sign-up.</p>"),
     ("Why am I asked to watch an ad?", "<p>Before you export, the app offers one short video that you choose to watch. One watched ad covers your exports for 2 minutes. If you choose Not now, nothing is exported and you can try again any time. If no ad is available, for example when you are offline, the export goes ahead anyway.</p>"),
     ("Can it read the text on a scan?", "<p>Yes. Folia reads text on the device and can make the PDF searchable, so you can search and copy words inside it. You can also copy the text of a scan as plain text.</p>"),
-    ("Which devices does it run on?", "<p>iPhone with iOS 17 or later. Scanning with the camera needs a device with a camera.</p>"),
+    ("Which devices does it run on?", "<p>iPhone and iPad with iOS 17 or iPadOS 17 or later. Scanning with the camera needs a device with a camera.</p>"),
     ("When can I download it?", "<p>Folia is not released yet. This page will link to the App Store listing once the app is live.</p>"),
     ("Who makes Folia?", "<p>Ecom Swift LLC, a company registered in Wyoming, United States. You can reach us on the <a href=\"support/\">support page</a>.</p>"),
 ]
@@ -133,8 +133,8 @@ FEATURES = [
 
 
 def build_index():
-    title = "PDF Scanner & Editor: Folia | Free document scanner for iPhone"
-    desc = "Free document scanner and PDF toolkit for iPhone. Scan, read text, sign, merge, split, compress and protect PDFs. Everything stays on your device. Coming soon."
+    title = "PDF Scanner & Editor: Folia | Free document scanner for iPhone and iPad"
+    desc = "Free document scanner and PDF toolkit for iPhone and iPad. Scan, read text, sign, merge, split, compress and protect PDFs. Everything stays on your device. Coming soon."
     faq_html = "\n".join(f'<details><summary>{html.escape(q)}</summary><div class="answer">{a}</div></details>' for q, a in FAQ)
     feats = "\n".join(f"<li><h3>{n}</h3><p>{d}</p></li>" for n, d in FEATURES)
     body = head(title, desc, "") + header("") + f"""
@@ -143,7 +143,7 @@ def build_index():
 <div><h1>Paper in, PDF out.</h1><p class="lede">Scan, sign and tidy documents with nothing to pay and nothing uploaded.</p><span class="badge">Coming soon to the App Store</span></div>
 <div class="art"><img src="assets/icon-512.png" alt="Folia app icon: a sheet of paper with a scan line across it" width="320" height="320"></div>
 </div>
-<section class="block"><div class="wrap"><h2>Everything you do with a PDF</h2><p>Twelve tools in one app, all running on your iPhone.</p><ul class="grid">
+<section class="block"><div class="wrap"><h2>Everything you do with a PDF</h2><p>Twelve tools in one app, all running on your iPhone or iPad.</p><ul class="grid">
 {feats}
 </ul></div></section>
 <section class="block"><div class="wrap"><h2>Questions</h2><div class="faq">
@@ -176,7 +176,7 @@ def build_support():
 <p>Write to us and a person will read it.</p>
 <p><span class="email">{html.escape(SUPPORT_EMAIL)}</span></p>
 <p class="small">Select the address to copy it into your mail app.</p>
-<p>A message gets answered faster when it includes your iPhone model and iOS version, what you were doing and what happened, and a screenshot if it helps. Please do not send documents with personal details unless we ask.</p>
+<p>A message gets answered faster when it includes your device (iPhone or iPad) and its iOS version, what you were doing and what happened, and a screenshot if it helps. Please do not send documents with personal details unless we ask.</p>
 <p>Folia is not released yet, so support right now covers questions about the app before launch.</p>
 <h2>Common questions</h2>
 <div class="faq">

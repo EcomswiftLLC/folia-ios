@@ -7,13 +7,13 @@
 **App:** PDF Scanner & Editor: Folia ("Folia", "the app")
 **Provider:** Ecom Swift LLC, 30 N Gould St #37906, Sheridan, WY 82801, United States ("we", "us")
 **Contact:** support@ecomswiftllc.com
-**Last updated:** November 17, 2026
+**Last updated:** November 18, 2026
 
 By downloading or using Folia you agree to these terms. If you do not agree, do not use the app.
 
 ## 1. What Folia is
 
-Folia is a document scanner and PDF toolkit for iPhone. It lets you scan paper with the camera or add photos and PDFs, straighten and clean up pages, read their text on the device, and save the result as a PDF or pictures. It also includes tools to merge, split, compress, sign, number, watermark, protect and unlock PDFs, turn PDFs into pictures, and make a print-ready copy of an ID card.
+Folia is a document scanner and PDF toolkit for iPhone and iPad. It lets you scan paper with the camera or add photos and PDFs, straighten and clean up pages, read their text on the device, and save the result as a PDF or pictures. It also includes tools to merge, split, compress, sign, number, watermark, protect and unlock PDFs, turn PDFs into pictures, and make a print-ready copy of an ID card.
 
 ## 2. Licence
 

@@ -15,4 +15,4 @@ Naming rule (owner, always): search keywords first, brand last, one colon.
 
 Keyword rules: no word repeated from the name or subtitle, no spaces after commas, no other app brands.
 
-Promotional text: Scan paper, sign, merge and compress PDFs. Free, private and made for your iPhone.
+Promotional text: Scan paper, sign, merge and compress PDFs. Free, private and made for your iPhone and iPad.

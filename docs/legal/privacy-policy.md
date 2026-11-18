@@ -7,7 +7,7 @@
 **App:** PDF Scanner & Editor: Folia ("Folia")
 **Company:** Ecom Swift LLC, 30 N Gould St #37906, Sheridan, WY 82801, United States
 **Contact:** support@ecomswiftllc.com
-**Last updated:** November 17, 2026
+**Last updated:** November 18, 2026
 
 This policy explains what Folia does with information. The short version: your documents are scanned, read and edited on your device and are never uploaded, and the only outside party that receives any data is the advertising service that pays for the app.
 
@@ -17,7 +17,7 @@ This policy explains what Folia does with information. The short version: your d
 - Your scans, PDFs, signature and the text found on your pages stay on your device. We do not upload them and we cannot see them.
 - Folia is free and shows ads from Google AdMob. AdMob collects some device and ad data to show and measure ads. You are asked for your consent where the law requires it.
 - We do not run our own analytics, and there are no in-app purchases or subscriptions.
-- Folia does not track you. The privacy manifest of the app declares that it does not use data for tracking.
+- Folia does not use your documents, or what you do in the app, to track you. The ads are the one exception to be aware of: if you allow tracking when iOS asks (see section 5), Google's advertising SDK may use your device's advertising identifier to show and measure ads. If you tap "Ask App Not to Track", the advertising identifier is not shared.
 
 ## 2. Documents and other information that stay on your device
 
