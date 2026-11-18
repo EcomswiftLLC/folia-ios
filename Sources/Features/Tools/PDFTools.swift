@@ -469,12 +469,13 @@ struct LockTool: View {
                         StatusLine(text: "This PDF has no password.", tone: .neutral)
                     }
                     SecureField(mode == .lock ? "New password (4 or more characters)" : "Password", text: $password)
-                        .textContentType(.password)
+                        .textContentType(mode == .lock ? UITextContentType.newPassword : UITextContentType.password)
                         .padding(12)
                         .background(AP.Palette.graphite, in: RoundedRectangle(cornerRadius: AP.Radius.chip, style: .continuous))
                         .foregroundStyle(AP.Palette.paper)
                     if mode == .lock {
                         SecureField("Repeat password", text: $confirm)
+                            .textContentType(.newPassword)
                             .padding(12)
                             .background(AP.Palette.graphite, in: RoundedRectangle(cornerRadius: AP.Radius.chip, style: .continuous))
                             .foregroundStyle(AP.Palette.paper)
@@ -591,14 +592,25 @@ struct PDFImagesTool: View {
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let chosenFormat = format
         let side = size.side
+        let note = RunNote()
         Task {
-            await runner.run {
+            await runner.run(note: note) {
+                // One page at a time: only the finished picture files are kept, never the page bitmaps. The finished
+                // files stay in memory until they are shared or saved, so a very long PDF stops at a size budget.
                 var files: [ExportFile] = []
-                for index in 0..<document.pageCount {
+                var kept = 0
+                var failed = 0
+                let total = document.pageCount
+                for index in 0..<total {
+                    if kept >= Self.memoryBudget {
+                        note.text = Self.cutShortText(done: files.count, of: total)
+                        break
+                    }
                     autoreleasepool {
                         guard let image = PDFOps.images(document, pages: [index], maxSide: side).first,
-                              let data = ImageCodec.encode(image, format: chosenFormat, quality: 0.88) else { return }
-                        let suffix = document.pageCount > 1 ? "-\(index + 1)" : ""
+                              let data = ImageCodec.encode(image, format: chosenFormat, quality: 0.88) else { failed += 1; return }
+                        let suffix = total > 1 ? "-\(index + 1)" : ""
+                        kept += data.count
                         files.append(ExportFile(
                             data: data,
                             filename: "\(base)\(suffix).\(chosenFormat.fileExtension)",
@@ -606,8 +618,18 @@ struct PDFImagesTool: View {
                         ))
                     }
                 }
+                if failed > 0 && note.text == nil {
+                    note.text = failed == 1 ? "1 page could not be converted." : "\(failed) pages could not be converted."
+                }
                 return files
             }
         }
+    }
+
+    /// The most picture data kept in memory for one conversion (about 250 MB).
+    static let memoryBudget = 250_000_000
+
+    static func cutShortText(done: Int, of total: Int) -> String {
+        "Only the first \(done) of \(total) pages were converted, to keep Folia within memory. Use Split PDF to cut the PDF into smaller parts, then convert each part."
     }
 }

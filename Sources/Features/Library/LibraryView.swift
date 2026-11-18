@@ -51,6 +51,8 @@ struct LibraryView: View {
     @State private var renaming: DocRecord?
     @State private var renameText = ""
     @State private var deleting: DocRecord?
+    /// The "some documents could not be read" notice can be closed for this session. A failed save cannot.
+    @State private var damageNoticeClosed = false
 
     private var sort: LibrarySort { LibrarySort(rawValue: sortRaw) ?? .newest }
 
@@ -68,6 +70,13 @@ struct LibraryView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: AP.Space.l) {
                     ToolHeader(title: "Documents", subtitle: subtitle)
+                    if let problem = store.libraryProblem, !(problem == .damaged && damageNoticeClosed) {
+                        LibraryProblemBanner(
+                            problem: problem,
+                            onRetry: { store.retrySave() },
+                            onDismiss: { damageNoticeClosed = true }
+                        )
+                    }
                     if store.docs.isEmpty {
                         emptyLibrary
                     } else if visible.isEmpty {
@@ -95,6 +104,9 @@ struct LibraryView: View {
             .navigationDestination(for: ToolRoute.self) { $0.destination }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .onChange(of: store.libraryProblem) { _, problem in
+            if let problem { FoliaAnnounce.post(LibraryProblemBanner.title(problem)) }
+        }
         .onChange(of: importer.openDoc) { _, id in
             guard let id else { return }
             path.append(id)

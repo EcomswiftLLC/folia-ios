@@ -16,8 +16,18 @@ struct ExportSheet: View {
     @State private var options = ExportOptions()
     @State private var files: [ExportFile] = []
     @State private var preparing = true
+    /// Keeps track of the build in progress, so a newer one waits for it and only the latest result is used.
+    @State private var gate = ExportBuildGate()
 
     private var doc: DocRecord? { store.doc(docID) }
+
+    /// Pages of the document that are missing from the prepared file because their picture could not be read.
+    private var skippedPages: Int {
+        switch format {
+        case .pdf: return files.first?.skippedPages ?? 0
+        case .jpg: return max(0, (doc?.pages.count ?? 0) - files.count)
+        }
+    }
 
     /// Changes whenever the output would change.
     private var key: String {
@@ -105,15 +115,27 @@ struct ExportSheet: View {
         } else {
             let total = files.reduce(0) { $0 + $1.data.count }
             let name = files.count == 1 ? files[0].filename : "\(files.count) pictures"
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2)
-                    Text(ByteText.string(total)).font(AP.Font.callout).foregroundStyle(AP.Palette.mist)
+            let skipped = skippedPages
+            VStack(alignment: .leading, spacing: AP.Space.s) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(name).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2)
+                        Text(ByteText.string(total)).font(AP.Font.callout).foregroundStyle(AP.Palette.mist)
+                    }
+                    Spacer()
+                    Image(systemName: skipped > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(skipped > 0 ? AP.Palette.danger : AP.Palette.success)
                 }
-                Spacer()
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(AP.Palette.success)
+                .accessibilityElement(children: .combine)
+                if skipped > 0 {
+                    StatusLine(
+                        text: skipped == 1
+                            ? "1 page could not be read and is missing from this file."
+                            : "\(skipped) pages could not be read and are missing from this file.",
+                        tone: .failure
+                    )
+                }
             }
-            .accessibilityElement(children: .combine)
         }
     }
 
@@ -134,16 +156,33 @@ struct ExportSheet: View {
         let settings = options
         let snapshot = current
         let wanted = format
-        let built: [ExportFile] = await Task.detached(priority: .userInitiated) {
+        // Only one full-document build runs at a time. A newer request cancels the one in progress and starts after
+        // it has stopped; a cancelled build returns nothing and its result is never shown.
+        let previous = gate.current
+        previous?.cancel()
+        let work = Task.detached(priority: .userInitiated) { () -> [ExportFile] in
+            _ = await previous?.value
+            if Task.isCancelled { return [] }
             switch wanted {
-            case .pdf: return [ExportBuilder.pdf(doc: snapshot, storage: storage, options: settings)]
+            case .pdf: return ExportBuilder.pdf(doc: snapshot, storage: storage, options: settings).map { [$0] } ?? []
             case .jpg: return ExportBuilder.images(doc: snapshot, storage: storage, options: settings, format: .jpeg)
             }
-        }.value
+        }
+        gate.current = work
+        let built = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
         if Task.isCancelled { return }
         files = built
         preparing = false
     }
+}
+
+/// Holds the export build that is currently running (see `ExportSheet.prepare`).
+final class ExportBuildGate {
+    var current: Task<[ExportFile], Never>?
 }
 
 // MARK: - Recognised text
@@ -154,8 +193,27 @@ struct TextResultView: View {
     @EnvironmentObject private var store: DocStore
     @State private var working = true
     @State private var copied = false
+    /// A short note under the copy button: the ad was declined, closed early or is being loaded.
+    @State private var copyNote: String?
 
     private var doc: DocRecord? { store.doc(docID) }
+
+    /// Copying all the text is an export like saving or sharing it, so it goes through the same rewarded gate
+    /// (and runs straight away when no ad is available).
+    private func requestCopy(_ doc: DocRecord) {
+        copyNote = nil
+        RewardedGate.shared.requestExport({
+            UIPasteboard.general.string = ExportBuilder.text(doc: doc).flatMap { String(data: $0.data, encoding: .utf8) }
+            copied = true
+            copyNote = nil
+            APHaptics.success()
+        }, onCancel: { reason in
+            copyNote = reason.message
+            FoliaAnnounce.post(reason.message)
+        }, onWaiting: { waiting in
+            copyNote = waiting ? "Getting the next ad ready" : nil
+        })
+    }
 
     var body: some View {
         ScrollView {
@@ -188,11 +246,10 @@ struct TextResultView: View {
                     }
                     VStack(spacing: AP.Space.s) {
                         Button {
-                            UIPasteboard.general.string = ExportBuilder.text(doc: doc).flatMap { String(data: $0.data, encoding: .utf8) }
-                            copied = true
-                            APHaptics.success()
+                            requestCopy(doc)
                         } label: { Label(copied ? "Copied" : "Copy all text", systemImage: copied ? "checkmark" : "doc.on.doc") }
                             .buttonStyle(.apSecondaryWide)
+                        if let copyNote { StatusLine(text: copyNote, tone: .neutral) }
                         if let file = ExportBuilder.text(doc: doc) {
                             FoliaExportBar(files: [file])
                         }

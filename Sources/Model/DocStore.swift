@@ -103,6 +103,32 @@ struct PageStorage {
     }
 }
 
+/// What happened when captures were stored: the document they went into, how many pages were stored, and how many
+/// could not be (for example the device is out of space).
+struct InsertResult: Equatable {
+    var docID: UUID?
+    var stored = 0
+    var failed = 0
+}
+
+/// Checks a library file for entries the tolerant decoder would silently repair or drop.
+enum LibraryAudit {
+    /// Number of page entries that are not objects, or whose id is missing or is not a valid UUID. Such a page is read
+    /// with a fresh id (or dropped), so its picture file on disk no longer belongs to any page.
+    static func unreadablePages(in data: Data) -> Int {
+        guard let entries = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return 0 }
+        var bad = 0
+        for entry in entries {
+            guard let doc = entry as? [String: Any], let pages = doc["pages"] as? [Any] else { continue }
+            for page in pages {
+                if let dict = page as? [String: Any], let raw = dict["id"] as? String, UUID(uuidString: raw) != nil { continue }
+                bad += 1
+            }
+        }
+        return bad
+    }
+}
+
 // MARK: - Importing pictures
 
 enum ScanImporter {
@@ -146,11 +172,11 @@ enum ScanImporter {
         return source
     }
 
-    /// Draws and prepares the pages of a PDF one at a time. Call off the main thread, on a document no other
-    /// thread is using.
-    static func makeSources(pdf document: PDFDocument, maxSide: CGFloat = 2400) -> [Source] {
+    /// Draws and prepares the pages of a PDF one at a time (all pages, or only `pages`). Call off the main thread,
+    /// on a document no other thread is using.
+    static func makeSources(pdf document: PDFDocument, pages: [Int]? = nil, maxSide: CGFloat = 2400) -> [Source] {
         var sources: [Source] = []
-        for index in 0..<document.pageCount {
+        for index in pages ?? Array(0..<document.pageCount) {
             autoreleasepool {
                 if let image = PDFOps.images(document, pages: [index], maxSide: maxSide).first,
                    let source = makeSource(image, detect: false) {
@@ -217,9 +243,16 @@ final class DocStore: ObservableObject {
     // MARK: Adding
 
     /// Stores captures as new pages, either in a new document or appended to `docID`. Returns the document id.
+    /// Use `insertReporting` to learn how many pages could not be written.
     @discardableResult
     func insert(_ sources: [ScanImporter.Source], title: String? = nil, into docID: UUID? = nil, filter: ScanFilter = FoliaPrefs.defaultFilter) -> UUID? {
-        guard !sources.isEmpty else { return nil }
+        insertReporting(sources, title: title, into: docID, filter: filter).docID
+    }
+
+    /// Same as `insert`, but also reports how many pages were stored and how many could not be written to disk.
+    func insertReporting(_ sources: [ScanImporter.Source], title: String? = nil, into docID: UUID? = nil, filter: ScanFilter = FoliaPrefs.defaultFilter) -> InsertResult {
+        var result = InsertResult()
+        guard !sources.isEmpty else { return result }
         var pages: [PageRecord] = []
         for source in sources {
             var page = PageRecord()
@@ -229,38 +262,65 @@ final class DocStore: ObservableObject {
                 try source.data.write(to: storage.sourceURL(page.id), options: .atomic)
                 pages.append(page)
             } catch {
-                continue
+                result.failed += 1
             }
         }
-        guard !pages.isEmpty else { return nil }
+        guard !pages.isEmpty else { return result }
+        result.stored = pages.count
         if let docID, let index = docs.firstIndex(where: { $0.id == docID }) {
             docs[index].pages.append(contentsOf: pages)
             docs[index].modifiedAt = Date()
             save()
-            return docID
+            result.docID = docID
+            return result
         }
         var record = DocRecord(title: title ?? Self.defaultTitle())
         record.autoTitle = title == nil
         record.pages = pages
         docs.insert(record, at: 0)
         save()
-        return record.id
-    }
-
-    /// Prepares pictures off the main thread, one at a time, then stores them.
-    func importImages(_ images: [CGImage], detect: Bool, into docID: UUID? = nil, title: String? = nil) async -> UUID? {
-        let sources: [ScanImporter.Source] = await Task.detached(priority: .userInitiated) {
-            ScanImporter.makeSources(images, detect: detect)
-        }.value
-        return importSources(sources, into: docID, title: title)
+        result.docID = record.id
+        return result
     }
 
     /// Stores captures that are already prepared (scaled and JPEG encoded) and starts reading their text.
     @discardableResult
     func importSources(_ sources: [ScanImporter.Source], into docID: UUID? = nil, title: String? = nil) -> UUID? {
-        let id = insert(sources, title: title, into: docID)
-        if let id { Task { await self.recognizeText(docID: id) } }
-        return id
+        importSourcesReporting(sources, into: docID, title: title).docID
+    }
+
+    /// Same as `importSources`, but also reports how many pages could not be stored.
+    func importSourcesReporting(_ sources: [ScanImporter.Source], into docID: UUID? = nil, title: String? = nil) -> InsertResult {
+        let result = insertReporting(sources, title: title, into: docID)
+        if let id = result.docID { Task { await self.recognizeText(docID: id) } }
+        return result
+    }
+
+    /// Adds the pages of a PDF in small batches, so a long PDF never holds all its prepared pages in memory: each
+    /// batch is drawn off the main thread and written to disk before the next one starts. Text recognition starts once,
+    /// after the last batch. Pages that could not be drawn or stored are counted in `failed`.
+    func importPDF(_ document: PDFDocument, title: String? = nil, into docID: UUID? = nil, maxSide: CGFloat = 2400, batchSize: Int = 10) async -> InsertResult {
+        var total = InsertResult()
+        var target = docID
+        let count = document.pageCount
+        let step = max(1, batchSize)
+        var start = 0
+        while start < count {
+            let indices = Array(start..<min(count, start + step))
+            start += step
+            let sources: [ScanImporter.Source] = await Task.detached(priority: .userInitiated) {
+                ScanImporter.makeSources(pdf: document, pages: indices, maxSide: maxSide)
+            }.value
+            total.failed += indices.count - sources.count
+            guard !sources.isEmpty else { continue }
+            let part = insertReporting(sources, title: title, into: target)
+            total.failed += part.failed
+            total.stored += part.stored
+            if let id = part.docID { target = id }
+        }
+        total.docID = total.stored > 0 ? target : nil
+        if let id = total.docID { Task { await self.recognizeText(docID: id) } }
+        return total
     }
 
     // MARK: Editing
@@ -406,6 +466,8 @@ final class DocStore: ObservableObject {
         guard let record = doc(docID) else { return }
         let storage = self.storage
         for page in record.pages where force || page.ocr == nil {
+            // Another pass may have read this page while an earlier one was busy: do not read it twice.
+            if !force, let latest = self.page(docID, page.id), latest.ocr != nil { continue }
             let snapshot = page
             let lines: [OCRLine] = await Task.detached(priority: .utility) {
                 guard let image = storage.render(snapshot, maxSide: 2000) else { return [] }
@@ -449,16 +511,42 @@ final class DocStore: ObservableObject {
 
     /// True when library.json could not be read or decoded this session. Unreferenced page files are then kept,
     /// because they may belong to documents in the preserved copy.
-    private(set) var indexWasDamaged = false
+    @Published private(set) var indexWasDamaged = false
     /// True while saving would overwrite a library file that could not be read and was not preserved.
     private var saveBlocked = false
     /// True when library.json exists but could not be opened at all this session.
     private var indexUnreadable = false
     /// False when the most recent save failed.
-    private(set) var lastSaveSucceeded = true
+    @Published private(set) var lastSaveSucceeded = true
 
     static let corruptIndexName = "library.corrupt.json"
     private var saveFailedMarkerURL: URL { storage.root.appendingPathComponent("save-failed.marker") }
+
+    /// A problem with the library file that the person must be told about, most serious first.
+    enum LibraryProblem: Equatable {
+        /// library.json exists but could not be opened. Nothing is saved over it this session.
+        case unreadable
+        /// The last attempt to write the library failed (for example the device is full).
+        case saveFailed
+        /// Part of library.json was damaged. A copy of the original was kept.
+        case damaged
+    }
+
+    var libraryProblem: LibraryProblem? {
+        if indexUnreadable { return .unreadable }
+        if !lastSaveSucceeded { return .saveFailed }
+        if indexWasDamaged { return .damaged }
+        return nil
+    }
+
+    /// Tries to write the library again, for the "Try again" button after a failed save.
+    func retrySave() { save() }
+
+    /// True when a damaged library file was kept aside at some point (library.corrupt.json or a dated copy).
+    private var hasPreservedCopy: Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: storage.root.path)) ?? []
+        return names.contains { $0.hasPrefix("library.corrupt") }
+    }
 
     private func load() {
         let fm = FileManager.default
@@ -482,8 +570,10 @@ final class DocStore: ObservableObject {
             return
         }
         docs = decoded.compactMap { $0.value }
-        if docs.count < decoded.count {
-            // Some documents could not be read. Keep a copy of the original before anything is saved over it.
+        // A page entry without a readable id is read with a fresh id (or dropped), which would leave its picture
+        // file without an owner. Treat that as damage too, so the file is not cleaned up as an orphan.
+        if docs.count < decoded.count || LibraryAudit.unreadablePages(in: data) > 0 {
+            // Some documents or pages could not be read. Keep a copy of the original before anything is saved over it.
             indexWasDamaged = true
             if !preserveDamagedIndex(move: false) { saveBlocked = true }
         }
@@ -522,7 +612,9 @@ final class DocStore: ObservableObject {
     }
 
     private func removeOrphans() {
-        guard !indexWasDamaged, lastSaveSucceeded else { return }
+        // After damage was found once, picture files without a page may still belong to the preserved copy of the
+        // library, so they are never cleaned up automatically.
+        guard !indexWasDamaged, lastSaveSucceeded, !hasPreservedCopy else { return }
         let used = Set(docs.flatMap { $0.pages.map { "\($0.id.uuidString).jpg" } })
         let files = (try? FileManager.default.contentsOfDirectory(atPath: storage.pagesDirectory.path)) ?? []
         for name in files where name.hasSuffix(".jpg") && !used.contains(name) {

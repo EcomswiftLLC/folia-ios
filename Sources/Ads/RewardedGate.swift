@@ -7,7 +7,13 @@ struct RewardedPolicy: Equatable {
     /// One watched ad covers every export for this long, so saving and then sharing the same result asks only once.
     static let graceInterval: TimeInterval = 120
 
+    /// How long after closing an ad early the next export request waits for the replacement ad that is loading.
+    static let earlyCloseWindow: TimeInterval = 120
+    /// The longest a request waits for that replacement ad. After this the export simply runs.
+    static let reloadWait: TimeInterval = 6
+
     private(set) var lastReward: Date?
+    private(set) var lastEarlyClose: Date?
 
     /// True when the person should be offered an ad before this export. Never when no ad is ready.
     func shouldOffer(adReady: Bool, now: Date = Date()) -> Bool {
@@ -16,8 +22,36 @@ struct RewardedPolicy: Equatable {
         return true
     }
 
+    /// True when an ad was just closed before the reward was earned and its replacement is still loading, so a
+    /// retry should wait a moment for it instead of exporting for free.
+    func shouldWaitForReload(adReady: Bool, reloading: Bool, now: Date = Date()) -> Bool {
+        guard !adReady, reloading, let lastEarlyClose else { return false }
+        if let lastReward, lastReward > lastEarlyClose { return false }
+        return now.timeIntervalSince(lastEarlyClose) < Self.earlyCloseWindow
+    }
+
     mutating func didEarnReward(now: Date = Date()) {
         lastReward = now
+        lastEarlyClose = nil
+    }
+
+    mutating func didCloseEarly(now: Date = Date()) {
+        lastEarlyClose = now
+    }
+}
+
+/// Why an export did not go ahead after the ad was offered.
+enum RewardedCancelReason: Equatable {
+    /// The person chose "Not now".
+    case declined
+    /// The ad was closed before the reward was earned.
+    case closedEarly
+
+    var message: String {
+        switch self {
+        case .declined: return "Export cancelled. Watch the short ad to export."
+        case .closedEarly: return "Watch the whole ad to export."
+        }
     }
 }
 
@@ -38,7 +72,9 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
 
     private var earned = false
     private var proceed: (() -> Void)?
-    private var cancelled: (() -> Void)?
+    private var cancelled: ((RewardedCancelReason) -> Void)?
+    /// A request that is waiting for the replacement ad after an ad was closed early.
+    private var waitTask: Task<Void, Never>?
 
     private override init() { super.init() }
 
@@ -78,7 +114,39 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
 
     /// Runs `action` right away when no ad is needed, otherwise asks first. The action runs only after the ad was
     /// watched to the end, or when the ad could not be shown. "Not now", or closing the ad early, runs `onCancel` instead.
-    func requestExport(_ action: @escaping () -> Void, onCancel: (() -> Void)? = nil) {
+    /// When an ad was just closed early and its replacement is still loading, the request waits a few seconds for it
+    /// (`onWaiting(true)` ... `onWaiting(false)`) rather than letting the export through for free. If no ad arrives
+    /// in time, the export runs: it is never blocked for good.
+    func requestExport(
+        _ action: @escaping () -> Void,
+        onCancel: ((RewardedCancelReason) -> Void)? = nil,
+        onWaiting: ((Bool) -> Void)? = nil
+    ) {
+        request(action, onCancel: onCancel, onWaiting: onWaiting, mayWait: true)
+    }
+
+    private func request(
+        _ action: @escaping () -> Void,
+        onCancel: ((RewardedCancelReason) -> Void)?,
+        onWaiting: ((Bool) -> Void)?,
+        mayWait: Bool
+    ) {
+        if mayWait, AdsManager.shared.adsReady,
+           policy.shouldWaitForReload(adReady: hasUsableAd, reloading: loading) {
+            // A second tap while waiting is ignored: the first request is still pending.
+            guard waitTask == nil else { return }
+            onWaiting?(true)
+            waitTask = Task { [self] in
+                let deadline = Date().addingTimeInterval(RewardedPolicy.reloadWait)
+                while !hasUsableAd, loading, Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                waitTask = nil
+                onWaiting?(false)
+                request(action, onCancel: onCancel, onWaiting: onWaiting, mayWait: false)
+            }
+            return
+        }
         guard AdsManager.shared.adsReady,
               policy.shouldOffer(adReady: hasUsableAd),
               let presenter = AdsPresenter.topViewController() else {
@@ -92,7 +160,7 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "Not now", style: .cancel) { _ in
-            onCancel?()
+            onCancel?(.declined)
         })
         alert.addAction(UIAlertAction(title: "Watch ad", style: .default) { [weak self] _ in
             self?.show(then: action, onCancel: onCancel)
@@ -100,7 +168,7 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
         presenter.present(alert, animated: true)
     }
 
-    private func show(then action: @escaping () -> Void, onCancel: (() -> Void)?) {
+    private func show(then action: @escaping () -> Void, onCancel: ((RewardedCancelReason) -> Void)?) {
         guard let ad, let presenter = AdsPresenter.topViewController() else {
             action()
             return
@@ -126,7 +194,9 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
             earned = false
             action?()
         } else {
-            cancel?()
+            // Closed before the reward: the next tap must not slip through while the replacement ad loads.
+            policy.didCloseEarly()
+            cancel?(.closedEarly)
         }
         preloadIfPossible()
     }

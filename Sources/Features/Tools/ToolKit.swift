@@ -34,30 +34,50 @@ struct PDFInput: Identifiable {
 
 // MARK: - Running a tool
 
+/// Lets work running in the background leave a short note for the person, for example that a very long PDF was cut short.
+final class RunNote: @unchecked Sendable {
+    var text: String?
+}
+
 @MainActor
 final class ToolRunner: ObservableObject {
     @Published var working = false
     @Published var files: [ExportFile] = []
     @Published var error: String?
+    /// A note shown next to a finished result (for example that only part of the PDF was converted).
+    @Published var notice: String?
+
+    /// Identifies the latest run. A run that finishes after a newer run started, or after `reset()`, belongs to
+    /// options that are no longer on screen, so its result is dropped.
+    private var runToken = 0
 
     /// Runs the work away from the main thread. An empty or missing result is shown as an error.
-    func run(failure: String = "Could not create the file. Try another PDF.", _ work: @escaping () -> [ExportFile]?) async {
+    func run(failure: String = "Could not create the file. Try another PDF.", note: RunNote? = nil, _ work: @escaping () -> [ExportFile]?) async {
+        runToken += 1
+        let token = runToken
         working = true
         error = nil
+        notice = nil
         files = []
         let result = await Task.detached(priority: .userInitiated) { work() }.value
+        guard token == runToken else { return }
         working = false
         if let result, !result.isEmpty {
             files = result
+            notice = note?.text
             APHaptics.success()
         } else {
             error = failure
         }
     }
 
+    /// Clears the result because an option changed. Any run still in progress is ignored when it finishes.
     func reset() {
+        runToken += 1
+        working = false
         files = []
         error = nil
+        notice = nil
     }
 }
 
@@ -103,6 +123,9 @@ struct ToolResultView: View {
                     FoliaExportBar(files: runner.files)
                 }
                 .foliaCard()
+                if let notice = runner.notice {
+                    StatusLine(text: notice, tone: .failure)
+                }
             }
         }
     }
@@ -237,11 +260,16 @@ struct PDFSourcePicker: View {
         options.quality = .standard
         options.searchable = true
         let file = await Task.detached(priority: .userInitiated) { ExportBuilder.pdf(doc: doc, storage: storage, options: options) }.value
-        guard let document = PDFDocument(data: file.data) else {
+        guard let file, let document = PDFDocument(data: file.data) else {
             message = "That scan could not be prepared."
             return
         }
         add(PDFInput(name: doc.title, document: document, bytes: file.data.count, sourceData: file.data))
+        if file.skippedPages > 0 {
+            message = file.skippedPages == 1
+                ? "1 page of that scan could not be read and was left out."
+                : "\(file.skippedPages) pages of that scan could not be read and were left out."
+        }
     }
 }
 

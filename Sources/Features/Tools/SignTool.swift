@@ -392,7 +392,8 @@ struct SignaturePad: View {
                         }
                     }
                     Rectangle().fill(Color.gray.opacity(0.4)).frame(height: 1).padding(.horizontal, AP.Space.m).padding(.bottom, 52)
-                    Text("Sign above the line").font(AP.Font.caption).foregroundStyle(Color.gray).padding(AP.Space.m)
+                    // The pad is always white, so the hint uses a fixed dark grey (about 7:1) in light and dark mode.
+                    Text("Sign above the line").font(AP.Font.caption).foregroundStyle(Color(white: 0.35)).padding(AP.Space.m)
                 }
                 .frame(height: 260)
                 .clipShape(RoundedRectangle(cornerRadius: AP.Radius.panel, style: .continuous))

@@ -78,16 +78,29 @@ enum PDFBuilder {
         title: String = "Scan",
         provider: (Int) -> PDFPageInput?
     ) -> Data {
+        makePDFReporting(count: count, pageSize: option, margin: margin, quality: quality, title: title, provider: provider).data
+    }
+
+    /// Same, and also counts the pages the provider could not produce (they are left out of the PDF).
+    static func makePDFReporting(
+        count: Int,
+        pageSize option: PageSizeOption = .auto,
+        margin: CGFloat = 0,
+        quality: Double = 0.82,
+        title: String = "Scan",
+        provider: (Int) -> PDFPageInput?
+    ) -> (data: Data, skipped: Int) {
         let format = UIGraphicsPDFRendererFormat()
         format.documentInfo = [
             kCGPDFContextCreator as String: "Folia",
             kCGPDFContextTitle as String: title,
         ]
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: a4), format: format)
-        return renderer.pdfData { context in
+        var skipped = 0
+        let data = renderer.pdfData { context in
             for index in 0..<count {
                 autoreleasepool {
-                    guard let input = provider(index) else { return }
+                    guard let input = provider(index) else { skipped += 1; return }
                     let image = input.image
                     let size = pageSize(for: CGSize(width: image.width, height: image.height), option: option)
                     let page = CGRect(origin: .zero, size: size)
@@ -102,6 +115,7 @@ enum PDFBuilder {
                 }
             }
         }
+        return (data, skipped)
     }
 
     /// Text drawn fully transparent: it is not visible, but PDF readers can search, select and copy it.
@@ -158,8 +172,13 @@ enum PDFOps {
         return out
     }
 
+    /// The box viewers show: the crop box (which is the media box when no crop box is set). Every drawing and size
+    /// calculation below uses this one box, so a page is never drawn with margins that viewers hide.
+    static let displayBox: PDFDisplayBox = .cropBox
+
+    /// The size of the page as it is displayed, in points: the display box with the page's rotation applied.
     static func pageSize(_ page: PDFPage) -> CGSize {
-        let box = page.bounds(for: .mediaBox)
+        let box = page.bounds(for: displayBox)
         let turned = abs(page.rotation) % 180 == 90
         return turned ? CGSize(width: box.height, height: box.width) : box.size
     }
@@ -180,7 +199,7 @@ enum PDFOps {
                 cg.fill(CGRect(origin: .zero, size: size))
                 cg.translateBy(x: 0, y: size.height)
                 cg.scaleBy(x: 1, y: -1)
-                page.draw(with: .mediaBox, to: cg)
+                page.draw(with: displayBox, to: cg)
                 cg.restoreGState()
                 overlay?(i, size, cg)
             }
@@ -206,7 +225,7 @@ enum PDFOps {
                     cg.fill(CGRect(origin: .zero, size: pixel))
                     cg.translateBy(x: 0, y: pixel.height)
                     cg.scaleBy(x: scale, y: -scale)
-                    page.draw(with: .mediaBox, to: cg)
+                    page.draw(with: displayBox, to: cg)
                 }
                 if let cgImage = image.cgImage { result.append(cgImage) }
             }

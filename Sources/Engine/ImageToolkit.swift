@@ -143,34 +143,6 @@ enum PhotoLoader {
     }
 }
 
-/// Holds the photos a tool is working on and loads picker items in the background.
-@MainActor
-final class PhotoSelection: ObservableObject {
-    @Published var photos: [LoadedPhoto] = []
-    @Published var isLoading = false
-    @Published var failedCount = 0
-
-    func load(_ items: [PhotosPickerItem], maxPixel: Int = 4096, append: Bool = false, lazy: Bool = true) async {
-        guard !items.isEmpty else { return }
-        isLoading = true
-        failedCount = 0
-        var result: [LoadedPhoto] = append ? photos : []
-        for (index, item) in items.enumerated() {
-            if let photo = await PhotoLoader.load(item, maxPixel: maxPixel, name: "Photo \(result.count + 1)", lazy: lazy) {
-                result.append(photo)
-            } else {
-                failedCount += 1
-            }
-            _ = index
-        }
-        photos = result
-        isLoading = false
-    }
-
-    func remove(_ id: UUID) { photos.removeAll { $0.id == id } }
-    func clear() { photos = []; failedCount = 0 }
-}
-
 // MARK: - Encoding and resizing
 
 enum ImageCodec {
@@ -243,27 +215,6 @@ enum ImageCodec {
                 inner.removeValue(forKey: kCGImagePropertyExifPixelYDimension as String)
                 result[dictionaryKey] = inner
             }
-        }
-        return result
-    }
-
-    /// Metadata with everything that identifies a person or place removed (GPS, device serial, owner names).
-    static func privacySafe(_ properties: [String: Any]) -> [String: Any] {
-        var result = sanitized(properties)
-        result.removeValue(forKey: kCGImagePropertyGPSDictionary as String)
-        result.removeValue(forKey: kCGImagePropertyMakerAppleDictionary as String)
-        result.removeValue(forKey: kCGImagePropertyIPTCDictionary as String)
-        if var exif = result[kCGImagePropertyExifDictionary as String] as? [String: Any] {
-            for key in [
-                kCGImagePropertyExifBodySerialNumber, kCGImagePropertyExifLensSerialNumber,
-                kCGImagePropertyExifCameraOwnerName, kCGImagePropertyExifUserComment,
-            ] { exif.removeValue(forKey: key as String) }
-            result[kCGImagePropertyExifDictionary as String] = exif
-        }
-        if var tiff = result[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
-            tiff.removeValue(forKey: kCGImagePropertyTIFFArtist as String)
-            tiff.removeValue(forKey: kCGImagePropertyTIFFHostComputer as String)
-            result[kCGImagePropertyTIFFDictionary as String] = tiff
         }
         return result
     }
@@ -344,17 +295,6 @@ struct ExportItem: Identifiable {
 
     var contentType: UTType { format.utType }
 
-    /// Writes the file to the temporary folder so it can be shared.
-    func temporaryURL() -> URL? {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-        do {
-            try data.write(to: url, options: .atomic)
-            return url
-        } catch {
-            return nil
-        }
-    }
-
     static func uniqueName(_ base: String, format: OutputFormat) -> String {
         let stamp = Int(Date().timeIntervalSince1970 * 1000) % 100_000_000
         return "\(base)-\(stamp).\(format.fileExtension)"
@@ -381,9 +321,14 @@ enum LibrarySaver {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let urls: [URL]
+    /// Called when the share sheet is finished, whether or not anything was shared.
+    var onFinish: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        let finish = onFinish
+        controller.completionWithItemsHandler = { _, _, _, _ in finish?() }
+        return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}

@@ -85,6 +85,71 @@ struct StatusLine: View {
     }
 }
 
+/// Tells VoiceOver about a change that is not tied to a control that has focus (a status line appearing, for example).
+enum FoliaAnnounce {
+    static func post(_ text: String) {
+        UIAccessibility.post(notification: .announcement, argument: text)
+    }
+}
+
+/// Shown at the top of the library when documents cannot be saved or the library file was damaged, so the person is
+/// never left believing their scans are safe when they might not be.
+struct LibraryProblemBanner: View {
+    let problem: DocStore.LibraryProblem
+    var onRetry: () -> Void
+    var onDismiss: () -> Void
+
+    static func title(_ problem: DocStore.LibraryProblem) -> String {
+        switch problem {
+        case .unreadable: return "Your library could not be opened"
+        case .saveFailed: return "Changes are not being saved"
+        case .damaged: return "Some documents could not be read"
+        }
+    }
+
+    static func message(_ problem: DocStore.LibraryProblem) -> String {
+        switch problem {
+        case .unreadable:
+            return "Folia could not read its saved list of documents, for example because the device is still locked. To protect them, nothing is saved over it in this session. Unlock the device and restart Folia."
+        case .saveFailed:
+            return "Folia could not write your documents to this device, which may be out of storage. Free up some space, then tap Try again. Recent changes can be lost if you close Folia now."
+        case .damaged:
+            return "Part of the saved list of documents was damaged. Folia kept a copy of the original file and opened everything it could read."
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AP.Space.s) {
+            Label(Self.title(problem), systemImage: "exclamationmark.triangle.fill")
+                .font(AP.Font.headline)
+                .foregroundStyle(AP.Palette.danger)
+            Text(Self.message(problem))
+                .font(AP.Font.callout)
+                .foregroundStyle(AP.Palette.paper)
+                .fixedSize(horizontal: false, vertical: true)
+            if problem != .unreadable {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: AP.Space.s) { actions }
+                    VStack(spacing: AP.Space.s) { actions }
+                }
+            }
+        }
+        .foliaCard()
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        if problem == .saveFailed {
+            Button(action: onRetry) { Label("Try again", systemImage: "arrow.clockwise") }
+                .buttonStyle(.apPrimaryWide)
+        } else {
+            Button("Dismiss", action: onDismiss)
+                .buttonStyle(.apSecondaryWide)
+        }
+    }
+}
+
 // MARK: - Page pictures
 
 /// A scanned page, drawn from its stored capture with the current crop, filter and rotation.
@@ -152,7 +217,7 @@ struct PDFPageThumb: View {
             guard let page = document.page(at: index) else { return }
             let size = PDFOps.pageSize(page)
             let scale = width * 2 / max(1, size.width)
-            image = page.thumbnail(of: CGSize(width: size.width * scale, height: size.height * scale), for: .mediaBox)
+            image = page.thumbnail(of: CGSize(width: size.width * scale, height: size.height * scale), for: PDFOps.displayBox)
         }
     }
 }
@@ -249,23 +314,61 @@ struct FoliaExportBar: View {
 
     private enum Status: Equatable {
         case idle, saving
+        /// Waiting a few seconds for the next ad after one was closed early.
+        case waitingForAd
         case saved(String)
         case failed(String)
-        case cancelled
+        case cancelled(RewardedCancelReason)
     }
 
-    private static let cancelledText = "Export cancelled. Watch the short ad to export."
+    private var isCancelled: Bool {
+        if case .cancelled = status { return true }
+        return false
+    }
 
     /// Asks the rewarded gate first. "Not now" or closing the ad early shows a short note instead of exporting.
     private func gated(_ action: @escaping () -> Void) {
-        if status == .cancelled { status = .idle }
-        RewardedGate.shared.requestExport(action, onCancel: {
-            withAnimation(.easeOut(duration: 0.2)) { status = .cancelled }
+        if isCancelled { status = .idle }
+        RewardedGate.shared.requestExport(action, onCancel: { reason in
+            withAnimation(.easeOut(duration: 0.2)) { status = .cancelled(reason) }
+        }, onWaiting: { waiting in
+            status = waiting ? .waitingForAd : .idle
         })
     }
 
     private var allImages: Bool { !files.isEmpty && files.allSatisfy { $0.isImage } }
     private var canPrint: Bool { allImages || (files.count == 1 && files[0].kind == .pdf) }
+
+    private var filesButton: some View {
+        Button {
+            gated { saveToFiles() }
+        } label: {
+            Label("Files", systemImage: "folder")
+        }
+        .buttonStyle(.apSecondaryWide)
+    }
+
+    private var photosButton: some View {
+        Button {
+            gated { Task { await saveToPhotos() } }
+        } label: {
+            HStack(spacing: 6) {
+                if status == .saving { ProgressView() }
+                Label("Photos", systemImage: "photo")
+            }
+        }
+        .buttonStyle(.apSecondaryWide)
+        .disabled(status == .saving)
+    }
+
+    private var printButton: some View {
+        Button {
+            gated { PrintHelper.print(files) }
+        } label: {
+            Label("Print", systemImage: "printer")
+        }
+        .buttonStyle(.apSecondaryWide)
+    }
 
     var body: some View {
         VStack(spacing: AP.Space.s) {
@@ -276,67 +379,73 @@ struct FoliaExportBar: View {
             }
             .buttonStyle(.apPrimaryWide)
 
-            HStack(spacing: AP.Space.s) {
-                Button {
-                    gated { saveToFiles() }
-                } label: {
-                    Label("Files", systemImage: "folder")
+            // Side by side when they fit; stacked, one per row, at large text sizes so no label is cut off.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: AP.Space.s) {
+                    filesButton
+                    if allImages { photosButton }
+                    if canPrint { printButton }
                 }
-                .buttonStyle(.apSecondaryWide)
-
-                if allImages {
-                    Button {
-                        gated { Task { await saveToPhotos() } }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if status == .saving { ProgressView() }
-                            Label("Photos", systemImage: "photo")
-                        }
-                    }
-                    .buttonStyle(.apSecondaryWide)
-                    .disabled(status == .saving)
-                }
-
-                if canPrint {
-                    Button {
-                        gated { PrintHelper.print(files) }
-                    } label: {
-                        Label("Print", systemImage: "printer")
-                    }
-                    .buttonStyle(.apSecondaryWide)
+                VStack(spacing: AP.Space.s) {
+                    filesButton
+                    if allImages { photosButton }
+                    if canPrint { printButton }
                 }
             }
 
             switch status {
             case .saved(let text): StatusLine(text: text, tone: .success)
             case .failed(let text): StatusLine(text: text, tone: .failure)
-            case .cancelled:
-                StatusLine(text: Self.cancelledText, tone: .neutral)
+            case .cancelled(let reason):
+                StatusLine(text: reason.message, tone: .neutral)
                     .transition(.opacity)
+            case .waitingForAd:
+                StatusLine(text: Self.waitingText, tone: .neutral)
             default: EmptyView()
             }
         }
-        .disabled(files.isEmpty)
+        .disabled(files.isEmpty || status == .waitingForAd)
         .task(id: status) {
             // The cancelled note is a hint, not a state: it fades away after a few seconds.
-            guard status == .cancelled else { return }
+            guard isCancelled else { return }
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if !Task.isCancelled, status == .cancelled {
+            if !Task.isCancelled, isCancelled {
                 withAnimation(.easeOut(duration: 0.3)) { status = .idle }
             }
         }
+        // A result from the previous file must not stay on screen once the file is a different one.
+        .onChange(of: files.map(\.id)) { _, _ in
+            if status != .saving { status = .idle }
+        }
+        .onChange(of: status) { _, new in
+            switch new {
+            case .saved(let text), .failed(let text): FoliaAnnounce.post(text)
+            case .cancelled(let reason): FoliaAnnounce.post(reason.message)
+            case .waitingForAd: FoliaAnnounce.post(Self.waitingText)
+            default: break
+            }
+        }
         .sheet(isPresented: $showShare) {
-            ShareSheet(urls: shareURLs)
-                .presentationDetents([.medium, .large])
-                .ignoresSafeArea()
+            let urls = shareURLs
+            ShareSheet(urls: urls, onFinish: {
+                // Give the receiving app a moment to finish reading the copy before it is removed.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30) { ExportFile.removeTemporary(urls) }
+            })
+            .presentationDetents([.medium, .large])
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $showExporter) {
-            ExportPicker(urls: exportURLs) { saved in
+            let urls = exportURLs
+            ExportPicker(urls: urls) { saved in
                 if saved { status = .saved("Saved to Files") }
+                // The picker has already copied the files where the person chose, so these copies are done with.
+                ExportFile.removeTemporary(urls)
             }
             .ignoresSafeArea()
         }
     }
+
+    private static let waitingText = "Getting the next ad ready"
 
     private func urls() -> [URL]? {
         let result = files.compactMap { $0.temporaryURL() }

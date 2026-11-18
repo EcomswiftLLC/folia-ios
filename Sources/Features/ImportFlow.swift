@@ -53,6 +53,20 @@ final class ImportController: ObservableObject {
 
     /// When set, new pages go into this document instead of a new one.
     private(set) var appendTo: UUID?
+    /// Pages of the current import that could not be read or stored. Reported once, in `complete`.
+    private var failedPages = 0
+
+    /// Stores prepared pages and remembers how many could not be written.
+    private func addSources(_ sources: [ScanImporter.Source], title: String? = nil, store: DocStore) -> UUID? {
+        let result = store.importSourcesReporting(sources, into: appendTo, title: title)
+        failedPages += result.failed
+        return result.docID
+    }
+
+    static func failureText(_ count: Int) -> String {
+        let what = count == 1 ? "1 page" : "\(count) pages"
+        return "\(what) could not be added. The picture may be damaged, or this device may be low on storage."
+    }
 
     func scan(into doc: UUID? = nil) {
         appendTo = doc
@@ -79,6 +93,8 @@ final class ImportController: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         guard scan.pageCount > 0 else { return }
+        failedPages = 0
+        let pageCount = scan.pageCount
         let sources: [ScanImporter.Source] = await Task.detached(priority: .userInitiated) {
             var result: [ScanImporter.Source] = []
             for index in 0..<scan.pageCount {
@@ -91,7 +107,8 @@ final class ImportController: ObservableObject {
             }
             return result
         }.value
-        let id = store.importSources(sources, into: appendTo)
+        failedPages += max(0, pageCount - sources.count)
+        let id = addSources(sources, store: store)
         complete(id)
     }
 
@@ -101,17 +118,20 @@ final class ImportController: ObservableObject {
         guard !items.isEmpty else { return }
         isWorking = true
         defer { isWorking = false }
+        failedPages = 0
         var sources: [ScanImporter.Source] = []
         for item in items {
             guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
             let source = await Task.detached(priority: .userInitiated) { ScanImporter.makeSource(data: data, detect: true) }.value
             if let source { sources.append(source) }
         }
+        failedPages += items.count - sources.count
         guard !sources.isEmpty else {
+            failedPages = 0
             message = "Those photos could not be opened."
             return
         }
-        let id = store.importSources(sources, into: appendTo)
+        let id = addSources(sources, store: store)
         complete(id)
     }
 
@@ -119,6 +139,7 @@ final class ImportController: ObservableObject {
         guard !urls.isEmpty else { return }
         isWorking = true
         defer { isWorking = false }
+        failedPages = 0
         var lastID: UUID?
         var pictures: [ScanImporter.Source] = []
         var skippedLocked = 0
@@ -128,24 +149,21 @@ final class ImportController: ObservableObject {
             if url.pathExtension.lowercased() == "pdf" {
                 guard let document = PDFDocument(url: url) else { continue }
                 if document.isLocked { skippedLocked += 1; continue }
-                // This document instance is used only by the background task below.
-                let pages = await Task.detached(priority: .userInitiated) { ScanImporter.makeSources(pdf: document, maxSide: 2400) }.value
-                guard !pages.isEmpty else { continue }
+                // Pages are drawn and written to disk in small batches, so a long PDF stays within memory.
                 let title = url.deletingPathExtension().lastPathComponent
-                if let appendTo {
-                    lastID = store.importSources(pages, into: appendTo)
-                } else {
-                    lastID = store.importSources(pages, title: title)
-                }
+                let result = await store.importPDF(document, title: appendTo == nil ? title : nil, into: appendTo)
+                failedPages += result.failed
+                if let id = result.docID { lastID = id }
             } else if let data = try? Data(contentsOf: url) {
                 let source = await Task.detached(priority: .userInitiated) { ScanImporter.makeSource(data: data, detect: true) }.value
-                if let source { pictures.append(source) }
+                if let source { pictures.append(source) } else { failedPages += 1 }
             }
         }
         if !pictures.isEmpty {
-            lastID = store.importSources(pictures, into: appendTo)
+            if let id = addSources(pictures, store: store) { lastID = id }
         }
         if lastID == nil {
+            failedPages = 0
             message = skippedLocked > 0
                 ? "That PDF is password protected. Remove the password in Tools first, then add it."
                 : "Those files could not be opened."
@@ -156,12 +174,18 @@ final class ImportController: ObservableObject {
     }
 
     private func complete(_ id: UUID?) {
+        let failed = failedPages
+        failedPages = 0
         guard let id else {
             message = "Nothing could be added. Try again."
             return
         }
         if appendTo == nil { openDoc = id }
         appendTo = nil
+        if failed > 0 {
+            let text = Self.failureText(failed)
+            message = message.map { $0 + " " + text } ?? text
+        }
     }
 }
 

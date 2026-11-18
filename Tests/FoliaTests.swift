@@ -49,6 +49,21 @@ final class FoliaTests: XCTestCase {
         XCTAssertTrue(policy.shouldOffer(adReady: true, now: now.addingTimeInterval(300)))
     }
 
+    func testRewardedPolicyWaitsForReloadOnlyAfterAnAdWasClosedEarly() {
+        var policy = RewardedPolicy()
+        let now = Date()
+        XCTAssertFalse(policy.shouldWaitForReload(adReady: false, reloading: true, now: now), "nothing was closed early yet")
+        policy.didCloseEarly(now: now)
+        XCTAssertTrue(policy.shouldWaitForReload(adReady: false, reloading: true, now: now.addingTimeInterval(3)))
+        XCTAssertFalse(policy.shouldWaitForReload(adReady: true, reloading: true, now: now.addingTimeInterval(3)), "an ad is ready: offer it")
+        XCTAssertFalse(policy.shouldWaitForReload(adReady: false, reloading: false, now: now.addingTimeInterval(3)), "no reload in flight: the export runs")
+        XCTAssertFalse(policy.shouldWaitForReload(adReady: false, reloading: true, now: now.addingTimeInterval(RewardedPolicy.earlyCloseWindow + 1)), "long after: the export runs")
+        policy.didEarnReward(now: now.addingTimeInterval(10))
+        XCTAssertFalse(policy.shouldWaitForReload(adReady: false, reloading: true, now: now.addingTimeInterval(11)), "a watched ad ends the wait")
+        XCTAssertEqual(RewardedCancelReason.closedEarly.message, "Watch the whole ad to export.")
+        XCTAssertEqual(RewardedPolicy.reloadWait, 6)
+    }
+
     // MARK: scan engine
 
     func testQuadRules() {
@@ -146,10 +161,13 @@ final class FoliaTests: XCTestCase {
     }
 
     func testStreamingBuilderSkipsMissingPages() {
-        let data = PDFBuilder.makePDF(count: 3) { index in
+        let built = PDFBuilder.makePDFReporting(count: 3) { index in
             index == 1 ? nil : PDFPageInput(image: self.makeImage(width: 300, height: 400))
         }
-        XCTAssertEqual(PDFDocument(data: data)?.pageCount, 2)
+        XCTAssertEqual(PDFDocument(data: built.data)?.pageCount, 2)
+        XCTAssertEqual(built.skipped, 1, "a page that could not be drawn is counted, not hidden")
+        let all = PDFBuilder.makePDFReporting(count: 2) { _ in nil }
+        XCTAssertEqual(all.skipped, 2)
     }
 
     // MARK: PDF operations
@@ -230,6 +248,22 @@ final class FoliaTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), Data("hello".utf8))
         ExportFile.cleanTemporary()
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testRemoveTemporaryDeletesOnlyExportCopies() throws {
+        let file = ExportFile(data: Data("hello".utf8), filename: "hello.txt", kind: .text)
+        let first = try XCTUnwrap(file.temporaryURL())
+        let second = try XCTUnwrap(file.temporaryURL())
+        XCTAssertNotEqual(first.deletingLastPathComponent(), second.deletingLastPathComponent(), "every copy has its own folder")
+        ExportFile.removeTemporary([first])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path), "another copy that is still in use stays")
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("folia-outside-\(UUID().uuidString).txt")
+        try Data("keep".utf8).write(to: outside)
+        ExportFile.removeTemporary([outside])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path), "files outside the export folder are never removed")
+        try? FileManager.default.removeItem(at: outside)
+        ExportFile.removeTemporary([second])
     }
 
     // MARK: store
@@ -316,12 +350,31 @@ final class FoliaTests: XCTestCase {
         let doc = try XCTUnwrap(store.doc(id))
         var options = ExportOptions()
         options.quality = .small
-        let pdf = ExportBuilder.pdf(doc: doc, storage: storage, options: options)
+        let pdf = try XCTUnwrap(ExportBuilder.pdf(doc: doc, storage: storage, options: options))
         XCTAssertEqual(pdf.filename, "Export test.pdf")
+        XCTAssertEqual(pdf.skippedPages, 0)
         XCTAssertEqual(PDFDocument(data: pdf.data)?.pageCount, 2)
         let images = ExportBuilder.images(doc: doc, storage: storage, options: options, format: .jpeg)
         XCTAssertEqual(images.map(\.filename), ["Export test-1.jpg", "Export test-2.jpg"])
         XCTAssertNil(ExportBuilder.text(doc: doc), "no text before recognition")
+    }
+
+    @MainActor
+    func testExportReportsPagesThatCouldNotBeDrawn() throws {
+        let storage = tempStorage()
+        let store = DocStore(storage: storage)
+        let source = try XCTUnwrap(ScanImporter.makeSource(makeImage(width: 600, height: 800), detect: false))
+        let id = try XCTUnwrap(store.insert([source, source, source], title: "Gap"))
+        let doc = try XCTUnwrap(store.doc(id))
+        var options = ExportOptions()
+        options.quality = .small
+        try FileManager.default.removeItem(at: storage.sourceURL(doc.pages[1].id))
+        let partial = try XCTUnwrap(ExportBuilder.pdf(doc: doc, storage: storage, options: options))
+        XCTAssertEqual(partial.skippedPages, 1, "the missing page is reported instead of silently dropped")
+        XCTAssertEqual(PDFDocument(data: partial.data)?.pageCount, 2)
+        XCTAssertEqual(ExportBuilder.images(doc: doc, storage: storage, options: options, format: .jpeg).count, 2)
+        for page in doc.pages { try? FileManager.default.removeItem(at: storage.sourceURL(page.id)) }
+        XCTAssertNil(ExportBuilder.pdf(doc: doc, storage: storage, options: options), "a PDF with no pages is not a result")
     }
 
     @MainActor
@@ -385,5 +438,214 @@ final class FoliaTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: preserved), damaged, "saving a new library never overwrites the preserved copy")
         XCTAssertTrue(FileManager.default.fileExists(atPath: pageFile.path), "no clean-up in the session that found the damage")
         XCTAssertEqual(DocStore(storage: storage).docs.map(\.title), ["Fresh"])
+    }
+
+    @MainActor
+    func testPageWithUnreadableIdIsDamageAndItsFileIsKept() throws {
+        let storage = tempStorage()
+        storage.prepare()
+        let pageFile = storage.sourceURL(UUID())
+        try Data("jpeg".utf8).write(to: pageFile)
+        let json = #"[{"title": "Lease", "pages": [{"id": 42}]}]"#
+        try Data(json.utf8).write(to: storage.indexURL)
+        XCTAssertEqual(LibraryAudit.unreadablePages(in: Data(json.utf8)), 1)
+        XCTAssertEqual(LibraryAudit.unreadablePages(in: Data(#"[{"title": "Ok", "pages": [{"id": "\#(UUID().uuidString)"}]}]"#.utf8)), 0)
+
+        let store = DocStore(storage: storage)
+        XCTAssertEqual(store.docs.count, 1)
+        XCTAssertTrue(store.indexWasDamaged, "a page whose id cannot be read is damage")
+        XCTAssertEqual(store.libraryProblem, .damaged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pageFile.path), "its picture file is not cleaned up as an orphan")
+
+        // Saving over the damaged library, then starting again, must not clean the file up either.
+        let source = try XCTUnwrap(ScanImporter.makeSource(makeImage(width: 300, height: 400), detect: false))
+        XCTAssertNotNil(store.insert([source], title: "New"))
+        let again = DocStore(storage: storage)
+        XCTAssertFalse(again.indexWasDamaged)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pageFile.path), "a preserved copy of the damaged library exists, so no clean-up")
+    }
+
+    @MainActor
+    func testInsertReportsPagesThatCouldNotBeWritten() throws {
+        let storage = tempStorage()
+        let store = DocStore(storage: storage)
+        let source = try XCTUnwrap(ScanImporter.makeSource(makeImage(width: 300, height: 400), detect: false))
+        // A file where the Pages folder should be: no page can be written.
+        try FileManager.default.removeItem(at: storage.pagesDirectory)
+        try Data("x".utf8).write(to: storage.pagesDirectory)
+        let result = store.insertReporting([source, source], title: "Full")
+        XCTAssertNil(result.docID)
+        XCTAssertEqual(result.stored, 0)
+        XCTAssertEqual(result.failed, 2, "failed pages are counted, not dropped silently")
+        XCTAssertTrue(store.docs.isEmpty)
+        XCTAssertNil(store.insert([source]))
+    }
+
+    @MainActor
+    func testFailedSaveIsReportedAndCanBeRetried() throws {
+        let storage = tempStorage()
+        let store = DocStore(storage: storage)
+        XCTAssertNil(store.libraryProblem)
+        let source = try XCTUnwrap(ScanImporter.makeSource(makeImage(width: 300, height: 400), detect: false))
+        // A read-only app folder: the page file (in its own sub folder) can be written, the library file cannot.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: storage.root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: storage.root.path) }
+        XCTAssertNotNil(store.insert([source], title: "Unsaved"))
+        XCTAssertFalse(store.lastSaveSucceeded)
+        XCTAssertEqual(store.libraryProblem, .saveFailed)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: storage.root.path)
+        store.retrySave()
+        XCTAssertTrue(store.lastSaveSucceeded)
+        XCTAssertNil(store.libraryProblem)
+        XCTAssertEqual(DocStore(storage: storage).docs.map(\.title), ["Unsaved"])
+    }
+
+    @MainActor
+    func testImportPDFAddsPagesInBatches() async throws {
+        let store = DocStore(storage: tempStorage())
+        let doc = samplePDF(pages: 5)
+        let result = await store.importPDF(doc, title: "Batches", batchSize: 2)
+        XCTAssertEqual(result.stored, 5)
+        XCTAssertEqual(result.failed, 0)
+        let id = try XCTUnwrap(result.docID)
+        XCTAssertEqual(store.doc(id)?.pages.count, 5, "every batch lands in the same document")
+        XCTAssertEqual(store.doc(id)?.title, "Batches")
+        let more = await store.importPDF(doc, into: id, batchSize: 3)
+        XCTAssertEqual(more.docID, id)
+        XCTAssertEqual(store.doc(id)?.pages.count, 10)
+        XCTAssertEqual(ScanImporter.makeSources(pdf: doc, pages: [1, 3], maxSide: 600).count, 2)
+    }
+
+    // MARK: confirmations and tool runs
+
+    func testPageDeletionWordingWarnsAboutTheLastPage() {
+        let one = PageDeletion.wording(deleting: 1, of: 4)
+        XCTAssertFalse(one.removesDocument)
+        XCTAssertEqual(one.title, "Delete this page?")
+        XCTAssertEqual(PageDeletion.wording(deleting: 2, of: 4).title, "Delete 2 pages?")
+        let last = PageDeletion.wording(deleting: 1, of: 1)
+        XCTAssertTrue(last.removesDocument)
+        XCTAssertTrue(last.message.contains("whole document"))
+        XCTAssertTrue(PageDeletion.wording(deleting: 3, of: 3).removesDocument, "taking out every page removes the document too")
+    }
+
+    private func slowWork(_ name: String, delay: TimeInterval) -> () -> [ExportFile]? {
+        {
+            Thread.sleep(forTimeInterval: delay)
+            return [ExportFile(data: Data(name.utf8), filename: name, kind: .text)]
+        }
+    }
+
+    @MainActor
+    func testToolRunnerIgnoresRunsThatWereSupersededOrReset() async {
+        let runner = ToolRunner()
+        // An option changes while a run is in progress: its result must never show up.
+        let stale = Task { await runner.run(self.slowWork("stale.txt", delay: 0.5)) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        runner.reset()
+        XCTAssertFalse(runner.working, "reset ends the spinner")
+        await stale.value
+        XCTAssertTrue(runner.files.isEmpty, "the result of a reset run is dropped")
+        XCTAssertNil(runner.error)
+
+        // A newer run finishes first; the older one finishing later must not replace it.
+        let slow = Task { await runner.run(self.slowWork("slow.txt", delay: 0.5)) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        await runner.run(slowWork("fast.txt", delay: 0))
+        await slow.value
+        XCTAssertEqual(runner.files.map(\.filename), ["fast.txt"])
+        XCTAssertFalse(runner.working)
+    }
+
+    // MARK: pages as displayed (rotation and crop box)
+
+    private func pdfData(size: CGSize, draw: (CGContext) -> Void) -> Data {
+        UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: size)).pdfData { context in
+            context.beginPage()
+            context.cgContext.setFillColor(UIColor.white.cgColor)
+            context.cgContext.fill(CGRect(origin: .zero, size: size))
+            draw(context.cgContext)
+        }
+    }
+
+    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) -> String {
+        var buffer = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        buffer.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+                bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        let o = (y * image.width + x) * 4
+        let (r, g, b) = (Int(buffer[o]), Int(buffer[o + 1]), Int(buffer[o + 2]))
+        if r > 200 && g < 90 && b < 90 { return "red" }
+        if g > 150 && r < 90 && b < 90 { return "green" }
+        if b > 200 && r < 90 && g < 90 { return "blue" }
+        if r > 235 && g > 235 && b > 235 { return "white" }
+        return "rgb(\(r),\(g),\(b))"
+    }
+
+    private func layout(_ image: CGImage) -> String {
+        let w = image.width, h = image.height
+        let (left, right, top, bottom) = (w / 4, w * 3 / 4, h / 8, h * 7 / 8)
+        return "\(w)x\(h) topLeft=\(pixel(image, left, top)) topRight=\(pixel(image, right, top)) bottomLeft=\(pixel(image, left, bottom)) bottomRight=\(pixel(image, right, bottom))"
+    }
+
+    func testRotatedPageIsDrawnAsDisplayed() throws {
+        // A landscape page (400 x 200) with a red square in its top left corner.
+        let data = pdfData(size: CGSize(width: 400, height: 200)) { cg in
+            cg.setFillColor(UIColor.red.cgColor)
+            cg.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+        }
+        let doc = try XCTUnwrap(PDFDocument(data: data))
+        let page = try XCTUnwrap(doc.page(at: 0))
+        page.rotation = 90
+        let size = PDFOps.pageSize(page)
+        XCTAssertEqual(size.width, 200, accuracy: 0.5)
+        XCTAssertEqual(size.height, 400, accuracy: 0.5)
+
+        // Turned a quarter clockwise, the top left corner is now the top right corner.
+        let image = try XCTUnwrap(PDFOps.images(doc, maxSide: 400).first)
+        XCTAssertEqual(layout(image), "200x400 topLeft=white topRight=red bottomLeft=white bottomRight=white", "rendered picture")
+
+        // The same page redrawn into a new PDF keeps its look.
+        let redrawn = try XCTUnwrap(PDFOps.render(doc))
+        let copy = try XCTUnwrap(PDFDocument(data: redrawn))
+        let copyPage = try XCTUnwrap(copy.page(at: 0))
+        XCTAssertEqual(PDFOps.pageSize(copyPage).width, 200, accuracy: 0.5)
+        XCTAssertEqual(PDFOps.pageSize(copyPage).height, 400, accuracy: 0.5)
+        let copyImage = try XCTUnwrap(PDFOps.images(copy, maxSide: 400).first)
+        XCTAssertEqual(layout(copyImage), "200x400 topLeft=white topRight=red bottomLeft=white bottomRight=white", "re-rendered PDF")
+    }
+
+    func testCropBoxDecidesWhatIsDrawn() throws {
+        // 400 x 400 page: blue in the top left, red and green inside the visible area.
+        let data = pdfData(size: CGSize(width: 400, height: 400)) { cg in
+            cg.setFillColor(UIColor.blue.cgColor)
+            cg.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+            cg.setFillColor(UIColor.red.cgColor)
+            cg.fill(CGRect(x: 100, y: 100, width: 100, height: 100))
+            cg.setFillColor(UIColor(red: 0, green: 0.8, blue: 0, alpha: 1).cgColor)
+            cg.fill(CGRect(x: 200, y: 0, width: 100, height: 100))
+        }
+        let doc = try XCTUnwrap(PDFDocument(data: data))
+        let page = try XCTUnwrap(doc.page(at: 0))
+        // Viewers show only this part: x 100 to 300, and the top 200 points (PDF coordinates start at the bottom).
+        page.setBounds(CGRect(x: 100, y: 200, width: 200, height: 200), for: .cropBox)
+        let size = PDFOps.pageSize(page)
+        XCTAssertEqual(size.width, 200, accuracy: 0.5)
+        XCTAssertEqual(size.height, 200, accuracy: 0.5)
+
+        let expected = "200x200 topLeft=white topRight=green bottomLeft=red bottomRight=white"
+        let image = try XCTUnwrap(PDFOps.images(doc, maxSide: 200).first)
+        XCTAssertEqual(layout(image), expected, "rendered picture")
+
+        let redrawn = try XCTUnwrap(PDFOps.render(doc))
+        let copy = try XCTUnwrap(PDFDocument(data: redrawn))
+        let copyImage = try XCTUnwrap(PDFOps.images(copy, maxSide: 200).first)
+        XCTAssertEqual(layout(copyImage), expected, "re-rendered PDF")
     }
 }

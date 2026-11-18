@@ -44,12 +44,16 @@ struct PageEditorView: View {
         .sheet(isPresented: $showCrop) {
             if let current { CropView(docID: docID, pageID: current.id) }
         }
-        .confirmationDialog("Delete this page?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete page", role: .destructive) { deleteCurrent() }
+        .confirmationDialog(deletionWording.title, isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button(deletionWording.button, role: .destructive) { deleteCurrent() }
             Button("Keep it", role: .cancel) {}
         } message: {
-            Text("The page is removed from this document. This can’t be undone.")
+            Text(deletionWording.message)
         }
+    }
+
+    private var deletionWording: PageDeletion.Wording {
+        PageDeletion.wording(deleting: 1, of: pages.count)
     }
 
     private func controls(_ page: PageRecord) -> some View {

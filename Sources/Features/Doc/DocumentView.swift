@@ -1,5 +1,35 @@
 import SwiftUI
 
+/// Wording for the confirmation before pages are deleted. Taking out every page also removes the document, and the
+/// person is told so.
+enum PageDeletion {
+    struct Wording: Equatable {
+        var title: String
+        var message: String
+        var button: String
+        var removesDocument: Bool
+    }
+
+    static func wording(deleting count: Int, of total: Int) -> Wording {
+        if total > 0 && count >= total {
+            return Wording(
+                title: total == 1 ? "Delete the only page?" : "Delete every page?",
+                message: "With no pages left, the whole document is removed from this device. This can’t be undone.",
+                button: "Delete page and document",
+                removesDocument: true
+            )
+        }
+        return Wording(
+            title: count == 1 ? "Delete this page?" : "Delete \(count) pages?",
+            message: count == 1
+                ? "The page is removed from this device. This can’t be undone."
+                : "The pages are removed from this device. This can’t be undone.",
+            button: count == 1 ? "Delete page" : "Delete \(count) pages",
+            removesDocument: false
+        )
+    }
+}
+
 struct DocumentView: View {
     let docID: UUID
 
@@ -13,9 +43,14 @@ struct DocumentView: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var confirmDelete = false
+    @State private var pageToDelete: UUID?
     @State private var route: ToolRoute?
 
     private var doc: DocRecord? { store.doc(docID) }
+
+    private var pageDeletionWording: PageDeletion.Wording {
+        PageDeletion.wording(deleting: 1, of: doc?.pages.count ?? 1)
+    }
 
     var body: some View {
         Group {
@@ -45,7 +80,7 @@ struct DocumentView: View {
                         .contextMenu {
                             Button { store.rotate(docID, page.id, by: -1) } label: { Label("Rotate left", systemImage: "rotate.left") }
                             Button { store.rotate(docID, page.id, by: 1) } label: { Label("Rotate right", systemImage: "rotate.right") }
-                            Button(role: .destructive) { store.deletePage(docID, page.id) } label: { Label("Delete page", systemImage: "trash") }
+                            Button(role: .destructive) { pageToDelete = page.id } label: { Label("Delete page", systemImage: "trash") }
                         }
                     }
                 }
@@ -73,6 +108,19 @@ struct DocumentView: View {
             Button("Keep it", role: .cancel) {}
         } message: {
             Text("The document and its pages are removed from this device. This can’t be undone.")
+        }
+        .confirmationDialog(
+            pageDeletionWording.title,
+            isPresented: Binding(get: { pageToDelete != nil }, set: { if !$0 { pageToDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(pageDeletionWording.button, role: .destructive) {
+                if let id = pageToDelete { store.deletePage(docID, id) }
+                pageToDelete = nil
+            }
+            Button("Keep it", role: .cancel) { pageToDelete = nil }
+        } message: {
+            Text(pageDeletionWording.message)
         }
     }
 
@@ -163,6 +211,12 @@ struct ReorderSheet: View {
 
     @EnvironmentObject private var store: DocStore
     @Environment(\.dismiss) private var dismiss
+    /// Pages a swipe asked to delete, waiting for the person to confirm.
+    @State private var pendingDelete: [UUID] = []
+
+    private var deletionWording: PageDeletion.Wording {
+        PageDeletion.wording(deleting: max(1, pendingDelete.count), of: store.doc(docID)?.pages.count ?? 1)
+    }
 
     var body: some View {
         NavigationStack {
@@ -179,8 +233,9 @@ struct ReorderSheet: View {
                 }
                 .onMove { store.movePages(docID, from: $0, to: $1) }
                 .onDelete { offsets in
+                    // Nothing is removed until the person confirms below.
                     let pages = store.doc(docID)?.pages ?? []
-                    for offset in offsets where offset < pages.count { store.deletePage(docID, pages[offset].id) }
+                    pendingDelete = offsets.filter { $0 < pages.count }.map { pages[$0].id }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -190,6 +245,21 @@ struct ReorderSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .confirmationDialog(
+                deletionWording.title,
+                isPresented: Binding(get: { !pendingDelete.isEmpty }, set: { if !$0 { pendingDelete = [] } }),
+                titleVisibility: .visible
+            ) {
+                Button(deletionWording.button, role: .destructive) {
+                    let ids = pendingDelete
+                    pendingDelete = []
+                    for id in ids { store.deletePage(docID, id) }
+                    if store.doc(docID) == nil { dismiss() }
+                }
+                Button("Keep it", role: .cancel) { pendingDelete = [] }
+            } message: {
+                Text(deletionWording.message)
             }
         }
     }

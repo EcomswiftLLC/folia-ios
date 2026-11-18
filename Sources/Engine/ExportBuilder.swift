@@ -57,6 +57,8 @@ struct ExportFile: Identifiable {
     let data: Data
     let filename: String
     let kind: Kind
+    /// PDF only: pages of the document that could not be drawn and are missing from this file.
+    var skippedPages: Int = 0
 
     var utType: UTType {
         switch kind {
@@ -73,9 +75,10 @@ struct ExportFile: Identifiable {
         FileManager.default.temporaryDirectory.appendingPathComponent("FoliaExports", isDirectory: true)
     }
 
-    /// Writes the file to a temporary folder so it can be shared, saved to Files or printed.
+    /// Writes the file to a temporary folder so it can be shared, saved to Files or printed. Every call uses a folder
+    /// of its own, so removing one copy never affects another that is still in use.
     func temporaryURL() -> URL? {
-        let directory = Self.folder.appendingPathComponent(id.uuidString, isDirectory: true)
+        let directory = Self.folder.appendingPathComponent(UUID().uuidString, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent(filename)
@@ -86,9 +89,21 @@ struct ExportFile: Identifiable {
         }
     }
 
-    /// Called at launch: shared copies are only needed while the share sheet is open.
+    /// Called at launch: removes copies left behind by an earlier session.
     static func cleanTemporary() {
         try? FileManager.default.removeItem(at: folder)
+    }
+
+    /// Removes copies made by `temporaryURL()` once sharing or saving is finished. Anything outside the export
+    /// folder is left alone.
+    static func removeTemporary(_ urls: [URL]) {
+        let root = folder.standardizedFileURL.path
+        for url in urls {
+            let directory = url.deletingLastPathComponent().standardizedFileURL
+            if directory.deletingLastPathComponent().path == root {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
     }
 
     /// A title that is safe to use as a file name.
@@ -105,19 +120,25 @@ struct ExportFile: Identifiable {
 // MARK: - Building
 
 enum ExportBuilder {
-    /// The whole document as one PDF. Pages are rendered one at a time.
-    static func pdf(doc: DocRecord, storage: PageStorage, options: ExportOptions) -> ExportFile {
-        let data = PDFBuilder.makePDF(
+    /// The whole document as one PDF. Pages are rendered one at a time. Pages that cannot be drawn are left out and
+    /// counted in `skippedPages`. Returns nil when no page at all could be drawn.
+    static func pdf(doc: DocRecord, storage: PageStorage, options: ExportOptions) -> ExportFile? {
+        let built = PDFBuilder.makePDFReporting(
             count: doc.pages.count,
             pageSize: options.pageSize,
             quality: options.quality.jpegQuality,
             title: doc.title
         ) { index in
+            // A cancelled build (the person changed an option) stops drawing; its result is thrown away.
+            if Task.isCancelled { return nil }
             let page = doc.pages[index]
             guard let image = storage.render(page, maxSide: options.quality.maxSide) else { return nil }
             return PDFPageInput(image: image, ocr: options.searchable ? page.ocr : nil)
         }
-        return ExportFile(data: data, filename: ExportFile.safeName(doc.title) + ".pdf", kind: .pdf)
+        guard doc.pages.count - built.skipped > 0 else { return nil }
+        var file = ExportFile(data: built.data, filename: ExportFile.safeName(doc.title) + ".pdf", kind: .pdf)
+        file.skippedPages = built.skipped
+        return file
     }
 
     /// Every page as a picture.
@@ -125,6 +146,7 @@ enum ExportBuilder {
         var files: [ExportFile] = []
         let base = ExportFile.safeName(doc.title)
         for (index, page) in doc.pages.enumerated() {
+            if Task.isCancelled { break }
             autoreleasepool {
                 guard let image = storage.render(page, maxSide: options.quality.maxSide),
                       let data = ImageCodec.encode(image, format: format, quality: options.quality.jpegQuality) else { return }
