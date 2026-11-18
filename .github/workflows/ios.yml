@@ -187,3 +187,44 @@ jobs:
           name: ui-test-logs
           path: build/ui-test.log
           if-no-files-found: ignore
+
+  iphone-landscape:
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Landscape UI tests on iPhone
+        run: |
+          set -o pipefail
+          mkdir -p build
+          DEST=$(xcrun simctl list devices available | grep -E "iPhone 1[6-9] Pro Max" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*/\2/')
+          if [ -z "$DEST" ]; then DEST=$(xcrun simctl list devices available | grep -E "iPhone 1[5-9]" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*/\2/'); fi
+          echo "iPhone simulator: $DEST"
+          xcrun simctl boot "$DEST" || true
+          xcrun simctl bootstatus "$DEST" -b || true
+          rm -rf build/ui-iphone.xcresult
+          xcodebuild test -project Folia.xcodeproj -scheme Folia -destination "id=$DEST" -only-testing:FoliaUITests -resultBundlePath build/ui-iphone.xcresult CODE_SIGNING_ALLOWED=NO | tee build/ui-test-iphone.log | grep -E "error:|Test Case|Executed|TEST " | tail -n 80
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p shots-landscape-iphone
+          xcrun xcresulttool export attachments --path build/ui-iphone.xcresult --output-path shots-landscape-iphone || true
+          ls shots-landscape-iphone | head -50
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-iphone-landscape
+          path: shots-landscape-iphone
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-logs-iphone
+          path: build/ui-test-iphone.log
+          if-no-files-found: ignore
