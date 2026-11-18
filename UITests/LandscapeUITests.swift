@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Opens each screen on an iPad that has been rotated to landscape and saves a screenshot of it.
 /// It fails when the app window does not end up wider than it is tall, so a rotation that silently
@@ -6,6 +7,20 @@ import XCTest
 final class LandscapeUITests: XCTestCase {
     override func setUp() {
         continueAfterFailure = true
+    }
+
+    /// The simulator hands back its portrait frame buffer with a landscape picture lying on its side, so turn it upright.
+    private func uprightScreenshot() -> UIImage {
+        let image: UIImage = XCUIScreen.main.screenshot().image
+        guard image.size.height > image.size.width else { return image }
+        let size = CGSize(width: image.size.height, height: image.size.width)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            context.cgContext.translateBy(x: 0, y: size.height)
+            context.cgContext.rotate(by: -.pi / 2)
+            image.draw(at: .zero)
+        }
     }
 
     private func check(_ screen: String, settle: TimeInterval = 18, file: StaticString = #filePath, line: UInt = #line) {
@@ -26,7 +41,7 @@ final class LandscapeUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(settle))
 
         let frame = window.frame
-        let shot = XCTAttachment(screenshot: app.screenshot())
+        let shot = XCTAttachment(image: uprightScreenshot())
         shot.name = "landscape-\(screen)"
         shot.lifetime = .keepAlways
         add(shot)
