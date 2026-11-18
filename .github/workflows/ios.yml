@@ -162,8 +162,8 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p build
-          DEST=$(xcrun simctl list devices available | grep -E "iPad Pro 13-inch" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*//')
-          if [ -z "$DEST" ]; then DEST=$(xcrun simctl list devices available | grep -E "iPad.*13-inch" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*//'); fi
+          DEST=$(xcrun simctl list devices available | grep -E "iPad Pro 13-inch" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*/\2/')
+          if [ -z "$DEST" ]; then DEST=$(xcrun simctl list devices available | grep -E "iPad.*13-inch" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*/\2/'); fi
           echo "iPad simulator: $DEST"
           xcrun simctl boot "$DEST" || true
           xcrun simctl bootstatus "$DEST" -b || true
