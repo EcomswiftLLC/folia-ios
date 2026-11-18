@@ -11,7 +11,11 @@ final class LandscapeUITests: XCTestCase {
 
     /// The simulator hands back its portrait frame buffer with a landscape picture lying on its side, so turn it upright.
     private func uprightScreenshot() -> UIImage {
-        let image: UIImage = XCUIScreen.main.screenshot().image
+        // Redraw first so the image's own orientation flag is applied to the pixels that get saved.
+        let source: UIImage = XCUIScreen.main.screenshot().image
+        let sourceFormat = UIGraphicsImageRendererFormat()
+        sourceFormat.scale = source.scale
+        let image: UIImage = UIGraphicsImageRenderer(size: source.size, format: sourceFormat).image { _ in source.draw(at: .zero) }
         guard image.size.height > image.size.width else { return image }
         let size = CGSize(width: image.size.height, height: image.size.width)
         let format = UIGraphicsImageRendererFormat()
