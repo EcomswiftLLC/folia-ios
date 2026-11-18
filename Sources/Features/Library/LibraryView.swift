@@ -42,6 +42,7 @@ enum LibrarySort: String, CaseIterable, Identifiable {
 struct LibraryView: View {
     @EnvironmentObject private var store: DocStore
     @EnvironmentObject private var importer: ImportController
+    @Environment(.horizontalSizeClass) private var hSize
     @AppStorage(FoliaPrefs.sortKey) private var sortRaw = LibrarySort.newest.rawValue
 
     @State private var path = NavigationPath()
@@ -131,7 +132,7 @@ struct LibraryView: View {
     // MARK: Parts
 
     private var grid: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: AP.Space.m)], spacing: AP.Space.l) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: hSize == .regular ? 210 : 150), spacing: AP.Space.m)], spacing: AP.Space.l) {
             ForEach(visible) { doc in
                 NavigationLink(value: doc.id) { DocCard(doc: doc) }
                     .buttonStyle(.plain)

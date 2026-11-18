@@ -21,6 +21,11 @@ struct ToolHeader: View {
 }
 
 extension View {
+    /// On iPad, keeps reading content a comfortable width and centred. On iPhone it changes nothing.
+    func readableWidth(_ width: CGFloat = 680) -> some View {
+        frame(maxWidth: width).frame(maxWidth: .infinity)
+    }
+
     /// A raised panel: the white or graphite card used for grouped content.
     func foliaCard(padding: CGFloat = AP.Space.m) -> some View {
         self
@@ -408,7 +413,13 @@ enum PrintHelper {
             controller.printInfo = info
             controller.printingItems = files.compactMap { UIImage(data: $0.data) }
         }
-        controller.present(animated: true, completionHandler: nil)
+        if UIDevice.current.userInterfaceIdiom == .pad,
+           let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow) {
+            let rect = CGRect(x: window.bounds.midX, y: window.bounds.midY, width: 1, height: 1)
+            controller.present(from: rect, in: window, animated: true, completionHandler: nil)
+        } else {
+            controller.present(animated: true, completionHandler: nil)
+        }
     }
 }
 

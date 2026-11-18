@@ -82,6 +82,13 @@ enum ToolKind: String, CaseIterable, Identifiable, Hashable {
 
 struct ToolsView: View {
     @EnvironmentObject private var importer: ImportController
+    @Environment(.horizontalSizeClass) private var hSize
+
+    private var toolColumns: [GridItem] {
+        hSize == .regular
+            ? [GridItem(.adaptive(minimum: 240), spacing: AP.Space.s)]
+            : [GridItem(.flexible(), spacing: AP.Space.s), GridItem(.flexible(), spacing: AP.Space.s)]
+    }
 
     private let groups: [(title: String, tools: [ToolKind])] = [
         ("Create", [.scan, .photos, .idcard]),
@@ -98,7 +105,7 @@ struct ToolsView: View {
                     ForEach(groups, id: \.title) { group in
                         VStack(alignment: .leading, spacing: AP.Space.s) {
                             APSectionTitle(text: group.title)
-                            LazyVGrid(columns: [GridItem(.flexible(), spacing: AP.Space.s), GridItem(.flexible(), spacing: AP.Space.s)], spacing: AP.Space.s) {
+                            LazyVGrid(columns: toolColumns, spacing: AP.Space.s) {
                                 ForEach(group.tools) { tool in
                                     switch tool {
                                     case .scan:

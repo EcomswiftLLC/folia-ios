@@ -5,6 +5,7 @@ struct DocumentView: View {
 
     @EnvironmentObject private var store: DocStore
     @EnvironmentObject private var importer: ImportController
+    @Environment(.horizontalSizeClass) private var hSize
     @Environment(\.dismiss) private var dismiss
 
     @State private var showExport = false
@@ -35,7 +36,7 @@ struct DocumentView: View {
                         .font(AP.Font.callout)
                         .foregroundStyle(AP.Palette.mist)
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: AP.Space.m)], spacing: AP.Space.l) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: hSize == .regular ? 210 : 150), spacing: AP.Space.m)], spacing: AP.Space.l) {
                     ForEach(Array(doc.pages.enumerated()), id: \.element.id) { index, page in
                         NavigationLink(value: PageRoute(docID: docID, pageID: page.id)) {
                             PageCell(page: page, number: index + 1)

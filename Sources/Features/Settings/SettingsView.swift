@@ -88,6 +88,7 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, AP.Space.m)
                 .padding(.bottom, AP.Space.xl)
+                .readableWidth()
             }
             .apScreen()
             .navigationBarTitleDisplayMode(.inline)
@@ -199,6 +200,7 @@ struct OnboardingView: View {
                     .buttonStyle(.apPrimaryWide)
                     .padding(.bottom, AP.Space.l)
                 }
+                .readableWidth(560)
                 .padding(.horizontal, AP.Space.l)
                 .frame(minHeight: geo.size.height, alignment: .top)
             }
