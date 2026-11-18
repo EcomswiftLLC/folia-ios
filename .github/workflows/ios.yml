@@ -133,6 +133,14 @@ jobs:
           }
           for SCREEN in library library-empty doc page page-bw crop export tools sign text split compress onboarding settings; do shoot "$SCREEN" light 22; done
           for SCREEN in library page tools doc; do shoot "$SCREEN" dark 22; done
+          # iPad landscape: the debug build turns the simulator sideways after launch
+          xcrun simctl ui "$DEST" appearance light || true
+          for SCREEN in library tools doc page sign export settings; do
+            xcrun simctl terminate "$DEST" com.ecomswift.folia || true
+            xcrun simctl launch "$DEST" com.ecomswift.folia -foScreen "$SCREEN" -foLandscape YES || true
+            sleep 26
+            xcrun simctl io "$DEST" screenshot "shots/land-$SCREEN.png" || true
+          done
           ls shots
       - uses: actions/upload-artifact@v4
         if: always()
