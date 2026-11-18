@@ -135,8 +135,9 @@ struct ToolTile: View {
                 .frame(width: 44, height: 44)
                 .background(AP.Palette.brass.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
-                Text(tool.title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(1).minimumScaleFactor(0.85)
-                Text(tool.blurb).font(AP.Font.caption).foregroundStyle(AP.Palette.mist).lineLimit(2)
+                Text(tool.title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2).minimumScaleFactor(0.85)
+                Text(tool.blurb).font(AP.Font.caption).foregroundStyle(AP.Palette.mist)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
@@ -180,7 +181,7 @@ struct ExtractTextEntry: View {
                                         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(AP.Palette.line, lineWidth: 1))
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(doc.title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(1)
+                                    Text(doc.title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2)
                                     Text(FoliaText.pages(doc.pages.count)).font(AP.Font.caption).foregroundStyle(AP.Palette.mist)
                                 }
                                 Spacer()
@@ -203,6 +204,10 @@ struct IDCardTool: View {
     @State private var backItem: PhotosPickerItem?
     @State private var front: CGImage?
     @State private var back: CGImage?
+    /// Card edges found in each photo. nil while a chosen photo has no usable edges.
+    @State private var frontQuad: Quad?
+    @State private var backQuad: Quad?
+    @State private var loadingCard = false
     @State private var page: PageSizeOption = .a4
     @State private var enhance = true
     @State private var asPDF = true
@@ -235,35 +240,96 @@ struct IDCardTool: View {
             .foliaCard()
             Button { run() } label: { Label("Create copy sheet", systemImage: "person.text.rectangle") }
                 .buttonStyle(.apPrimaryWide)
-                .disabled(front == nil || runner.working)
-            if front == nil { StatusLine(text: "Choose a photo of the front of the card.", tone: .neutral) }
+                .disabled(!canCreate || runner.working || loadingCard)
+            if loadingCard {
+                HStack(spacing: AP.Space.s) {
+                    ProgressView()
+                    Text("Finding the card edges").font(AP.Font.callout).foregroundStyle(AP.Palette.mist)
+                }
+            }
+            if front == nil {
+                StatusLine(text: "Choose a photo of the front of the card.", tone: .neutral)
+            } else if frontQuad == nil && !loadingCard {
+                StatusLine(text: "Front: \(Self.noEdgesText)", tone: .failure)
+            }
+            if back != nil && backQuad == nil && !loadingCard {
+                StatusLine(text: "Back: \(Self.noEdgesText)", tone: .failure)
+            }
             ToolResultView(runner: runner, workingText: "Building the sheet")
         }
-        .onChange(of: frontItem) { _, item in Task { front = await load(item); runner.reset() } }
-        .onChange(of: backItem) { _, item in Task { back = await load(item); runner.reset() } }
+        .onChange(of: frontItem) { _, item in
+            Task {
+                loadingCard = true
+                let loaded = await load(item)
+                front = loaded.image
+                frontQuad = loaded.quad
+                loadingCard = false
+                runner.reset()
+            }
+        }
+        .onChange(of: backItem) { _, item in
+            Task {
+                loadingCard = true
+                let loaded = await load(item)
+                back = loaded.image
+                backQuad = loaded.quad
+                loadingCard = false
+                runner.reset()
+            }
+        }
     }
 
-    private func load(_ item: PhotosPickerItem?) async -> CGImage? {
-        guard let item, let data = try? await item.loadTransferable(type: Data.self) else { return nil }
-        return await Task.detached(priority: .userInitiated) { PhotoLoader.decode(data, maxPixel: 2400) }.value
+    static let noEdgesText = "Could not find the card edges. Use a photo of the card on a plain background."
+
+    /// Both chosen sides have usable card edges.
+    private var canCreate: Bool {
+        guard front != nil, frontQuad != nil else { return false }
+        if back != nil && backQuad == nil { return false }
+        return true
     }
 
+    /// Reads the photo and finds the card in it, off the main thread.
+    private func load(_ item: PhotosPickerItem?) async -> (image: CGImage?, quad: Quad?) {
+        guard let item, let data = try? await item.loadTransferable(type: Data.self) else { return (nil, nil) }
+        return await Task.detached(priority: .userInitiated) { () -> (image: CGImage?, quad: Quad?) in
+            guard let image = PhotoLoader.decode(data, maxPixel: 2400) else { return (nil, nil) }
+            let small = ImageCodec.scaled(image, maxPixel: 900) ?? image
+            guard let found = DocumentDetector.detect(small), CardEdges.area(found) >= 0.04 else { return (image, nil) }
+            return (image, found)
+        }.value
+    }
+}
+
+/// Helpers for finding an ID card in a photo.
+enum CardEdges {
+    /// Area of a quad as a fraction of the photo.
+    static func area(_ quad: Quad) -> CGFloat {
+        let pts = quad.points
+        var sum: CGFloat = 0
+        for i in 0..<pts.count {
+            let a = pts[i], b = pts[(i + 1) % pts.count]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return abs(sum) / 2
+    }
+}
+
+extension IDCardTool {
     private func run() {
-        guard let front else { return }
+        guard let front, let frontQuad, canCreate else { return }
         let back = back
+        let backQuad = backQuad
         let clean = enhance
         let sheetPage = page
         let pdf = asPDF
         Task {
             await runner.run {
-                func prepare(_ image: CGImage) -> CGImage {
-                    let small = ImageCodec.scaled(image, maxPixel: 900) ?? image
-                    let quad = DocumentDetector.detect(small)
+                func prepare(_ image: CGImage, _ quad: Quad?) -> CGImage {
                     var out = PageRenderer.render(image, filter: clean ? .auto : .original, quad: quad, quarterTurns: 0, maxSide: 1800) ?? image
                     if out.height > out.width { out = PageRenderer.render(out, filter: .original, quad: nil, quarterTurns: 1) ?? out }
                     return out
                 }
-                guard let sheet = IDCardComposer.compose(front: prepare(front), back: back.map(prepare), page: sheetPage) else { return nil }
+                guard let sheet = IDCardComposer.compose(front: prepare(front, frontQuad), back: back.map { prepare($0, backQuad) }, page: sheetPage) else { return nil }
                 if pdf {
                     let data = PDFBuilder.makePDF([PDFPageInput(image: sheet)], pageSize: sheetPage, quality: 0.9, title: "ID card copy")
                     return [ExportFile(data: data, filename: "ID card copy.pdf", kind: .pdf)]

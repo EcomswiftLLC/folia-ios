@@ -9,15 +9,26 @@ struct PDFInput: Identifiable {
     var name: String
     var document: PDFDocument
     var bytes: Int
+    /// The original file bytes, used to give background work its own document instance.
+    var sourceData: Data? = nil
 
     var isLocked: Bool { document.isLocked }
     var pageCount: Int { document.pageCount }
+
+    /// A separate PDFDocument for work off the main thread. `document` is also drawn by `PDFPageThumb` on the main
+    /// thread, and a PDFDocument must never be used from two threads at once. Call this on the main thread, before
+    /// starting the background task. A locked file stays locked in the copy.
+    func workingCopy() -> PDFDocument {
+        if let sourceData, let copy = PDFDocument(data: sourceData) { return copy }
+        if let data = document.dataRepresentation(), let copy = PDFDocument(data: data) { return copy }
+        return document
+    }
 
     static func open(url: URL) -> PDFInput? {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url), let document = PDFDocument(data: data) else { return nil }
-        return PDFInput(name: url.deletingPathExtension().lastPathComponent, document: document, bytes: data.count)
+        return PDFInput(name: url.deletingPathExtension().lastPathComponent, document: document, bytes: data.count, sourceData: data)
     }
 }
 
@@ -171,21 +182,21 @@ struct PDFSourcePicker: View {
                 .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(AP.Palette.line, lineWidth: 1))
                 .overlay { if input.isLocked { Image(systemName: "lock.fill").foregroundStyle(AP.Palette.brass) } }
             VStack(alignment: .leading, spacing: 2) {
-                Text(input.name).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(1)
+                Text(input.name).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2)
                 Text(input.isLocked ? "Password protected" : "\(FoliaText.pages(input.pageCount)), \(ByteText.string(input.bytes))")
                     .font(AP.Font.caption)
                     .foregroundStyle(AP.Palette.mist)
             }
             Spacer(minLength: 0)
             if allowsMultiple && inputs.count > 1 {
-                Button { move(index, by: -1) } label: { Image(systemName: "chevron.up").frame(width: 36, height: 44) }
+                Button { move(index, by: -1) } label: { Image(systemName: "chevron.up").frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .disabled(index == 0)
                     .accessibilityLabel(Text("Move \(input.name) up"))
-                Button { move(index, by: 1) } label: { Image(systemName: "chevron.down").frame(width: 36, height: 44) }
+                Button { move(index, by: 1) } label: { Image(systemName: "chevron.down").frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .disabled(index == inputs.count - 1)
                     .accessibilityLabel(Text("Move \(input.name) down"))
             }
-            Button { inputs.removeAll { $0.id == input.id } } label: { Image(systemName: "xmark.circle.fill").frame(width: 36, height: 44) }
+            Button { inputs.removeAll { $0.id == input.id } } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44).contentShape(Rectangle()) }
                 .foregroundStyle(AP.Palette.mist)
                 .accessibilityLabel(Text("Remove \(input.name)"))
         }
@@ -230,7 +241,7 @@ struct PDFSourcePicker: View {
             message = "That scan could not be prepared."
             return
         }
-        add(PDFInput(name: doc.title, document: document, bytes: file.data.count))
+        add(PDFInput(name: doc.title, document: document, bytes: file.data.count, sourceData: file.data))
     }
 }
 
@@ -258,7 +269,7 @@ struct LibraryPickerSheet: View {
                                         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(AP.Palette.line, lineWidth: 1))
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(doc.title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(1)
+                                    Text(doc.title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2)
                                     Text(FoliaText.pages(doc.pages.count)).font(AP.Font.caption).foregroundStyle(AP.Palette.mist)
                                 }
                             }

@@ -27,8 +27,8 @@ struct PageEditorView: View {
                 Color.clear.onAppear { dismiss() }
             } else {
                 TabView(selection: $selected) {
-                    ForEach(pages) { page in
-                        PagePreview(page: page).tag(page.id)
+                    ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
+                        PagePreview(page: page, number: index + 1, total: pages.count).tag(page.id)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
@@ -108,6 +108,8 @@ struct PageEditorView: View {
 private struct PagePreview: View {
     @EnvironmentObject private var store: DocStore
     let page: PageRecord
+    let number: Int
+    let total: Int
 
     @State private var image: UIImage?
 
@@ -116,8 +118,12 @@ private struct PagePreview: View {
             if let image {
                 ZoomableImage(image: image)
                     .padding(AP.Space.m)
+                    .accessibilityElement()
+                    .accessibilityLabel(Text("Page \(number) of \(total)"))
+                    .accessibilityAddTraits(.isImage)
             } else {
                 ProgressView()
+                    .accessibilityLabel(Text("Loading page \(number) of \(total)"))
             }
         }
         .task(id: "\(page.id.uuidString)-\(page.version)") {
@@ -155,23 +161,26 @@ private struct FilterTile: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(selected ? AP.Palette.brass : AP.Palette.line, lineWidth: selected ? 2.5 : 1)
                 )
-                Text(filter.title)
+                Text(filter.shortTitle)
                     .font(AP.Font.caption)
                     .foregroundStyle(selected ? AP.Palette.brass : AP.Palette.mist)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(width: 76)
             }
             .frame(minHeight: 44)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text(filter.title))
+        .accessibilityLabel(Text(filter.accessibilityTitle))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .task(id: "\(page.id.uuidString)-\(page.quarterTurns)-\(String(describing: page.quad))") {
             let storage = store.storage
             var snapshot = page
             snapshot.filter = filter
+            // The look is computed on a mid-size page (see PageRenderer.minimumFilterSide) and then scaled down,
+            // so the small tile still shows the text. The decode must be at least that large.
             let rendered: UIImage? = await Task.detached(priority: .utility) {
-                storage.render(snapshot, maxSide: 200, decodeSide: 500).map { UIImage(cgImage: $0) }
+                storage.render(snapshot, maxSide: 200, decodeSide: 1100).map { UIImage(cgImage: $0) }
             }.value
             if let rendered { image = rendered }
         }
@@ -317,8 +326,39 @@ struct CropView: View {
                         note = nil
                     }
             )
+            .accessibilityElement()
             .accessibilityLabel(Text(label))
-            .accessibilityHint(Text("Drag to move. Or use Find edges or Whole photo."))
+            .accessibilityValue(Text(cornerValue(index)))
+            .accessibilityHint(Text("Drag to move, or swipe up or down to nudge. Find edges and Whole photo also set the corners."))
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: nudge(index, dx: 0, dy: -0.02)
+                case .decrement: nudge(index, dx: 0, dy: 0.02)
+                @unknown default: break
+                }
+            }
+            .accessibilityAction(named: Text("Move up")) { nudge(index, dx: 0, dy: -0.02) }
+            .accessibilityAction(named: Text("Move down")) { nudge(index, dx: 0, dy: 0.02) }
+            .accessibilityAction(named: Text("Move left")) { nudge(index, dx: -0.02, dy: 0) }
+            .accessibilityAction(named: Text("Move right")) { nudge(index, dx: 0.02, dy: 0) }
+    }
+
+    private func cornerValue(_ index: Int) -> String {
+        let p = quad.points[index]
+        return "\(Int((p.x * 100).rounded()))% across, \(Int((p.y * 100).rounded()))% down"
+    }
+
+    /// Moves one corner by a fraction of the photo, for people who cannot drag.
+    private func nudge(_ index: Int, dx: CGFloat, dy: CGFloat) {
+        let old = quad.points[index]
+        let moved = CGPoint(x: min(1, max(0, old.x + dx)), y: min(1, max(0, old.y + dy)))
+        switch index {
+        case 0: quad.tl = moved
+        case 1: quad.tr = moved
+        case 2: quad.br = moved
+        default: quad.bl = moved
+        }
+        note = nil
     }
 
     // MARK: Actions

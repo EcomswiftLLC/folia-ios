@@ -40,7 +40,7 @@ struct ExportSheet: View {
                         if format == .pdf {
                             VStack(alignment: .leading, spacing: AP.Space.s) {
                                 Text("Page size").font(AP.Font.label).foregroundStyle(AP.Palette.mist)
-                                HStack(spacing: AP.Space.s) {
+                                WrapChips {
                                     ForEach(PageSizeOption.allCases) { size in
                                         APChip(title: size.title, selected: options.pageSize == size) { options.pageSize = size }
                                     }
@@ -49,12 +49,13 @@ struct ExportSheet: View {
                         }
                         VStack(alignment: .leading, spacing: AP.Space.s) {
                             Text("Quality").font(AP.Font.label).foregroundStyle(AP.Palette.mist)
-                            HStack(spacing: AP.Space.s) {
+                            WrapChips {
                                 ForEach(ExportQuality.allCases) { quality in
                                     APChip(title: quality.title, selected: options.quality == quality) { options.quality = quality }
                                 }
                             }
                             Text(options.quality.detail).font(AP.Font.caption).foregroundStyle(AP.Palette.mist)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         if format == .pdf {
                             Toggle(isOn: $options.searchable) {
@@ -105,7 +106,7 @@ struct ExportSheet: View {
             let name = files.count == 1 ? files[0].filename : "\(files.count) pictures"
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(1)
+                    Text(name).font(AP.Font.headline).foregroundStyle(AP.Palette.paper).lineLimit(2)
                     Text(ByteText.string(total)).font(AP.Font.callout).foregroundStyle(AP.Palette.mist)
                 }
                 Spacer()
@@ -117,7 +118,12 @@ struct ExportSheet: View {
 
     private func prepare() async {
         preparing = true
-        guard var current = doc else { return }
+        guard var current = doc else {
+            // The document is gone (deleted elsewhere): stop the spinner and show the failure line.
+            files = []
+            preparing = false
+            return
+        }
         if format == .pdf && options.searchable {
             await store.recognizeText(docID: docID)
             current = store.doc(docID) ?? current

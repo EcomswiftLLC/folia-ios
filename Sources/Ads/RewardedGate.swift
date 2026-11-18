@@ -21,8 +21,8 @@ struct RewardedPolicy: Equatable {
     }
 }
 
-/// Folia is free. Saving or sharing a finished document is paid for by watching one short rewarded ad, which the person
-/// chooses to watch. When no ad is ready (offline, no fill, consent still pending) the export simply goes ahead.
+/// Folia is free. Saving, sharing or printing a finished document asks the person to watch one short rewarded ad.
+/// When no ad is ready (offline, no fill, consent still pending) the export simply goes ahead for free.
 @MainActor
 final class RewardedGate: NSObject, FullScreenContentDelegate {
     static let shared = RewardedGate()
@@ -38,6 +38,7 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
 
     private var earned = false
     private var proceed: (() -> Void)?
+    private var cancelled: (() -> Void)?
 
     private override init() { super.init() }
 
@@ -76,8 +77,8 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
     }
 
     /// Runs `action` right away when no ad is needed, otherwise asks first. The action runs only after the ad was
-    /// watched to the end, or when the ad could not be shown. "Not now" runs nothing.
-    func requestExport(_ action: @escaping () -> Void) {
+    /// watched to the end, or when the ad could not be shown. "Not now", or closing the ad early, runs `onCancel` instead.
+    func requestExport(_ action: @escaping () -> Void, onCancel: (() -> Void)? = nil) {
         guard AdsManager.shared.adsReady,
               policy.shouldOffer(adReady: hasUsableAd),
               let presenter = AdsPresenter.topViewController() else {
@@ -87,17 +88,19 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
         }
         let alert = UIAlertController(
             title: "Watch a short ad to export",
-            message: "Folia is free because of ads. Watch one ad to save or share your document.",
+            message: "Folia is free because of ads. Saving, sharing or printing asks you to watch one short ad.",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Not now", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Not now", style: .cancel) { _ in
+            onCancel?()
+        })
         alert.addAction(UIAlertAction(title: "Watch ad", style: .default) { [weak self] _ in
-            self?.show(then: action)
+            self?.show(then: action, onCancel: onCancel)
         })
         presenter.present(alert, animated: true)
     }
 
-    private func show(then action: @escaping () -> Void) {
+    private func show(then action: @escaping () -> Void, onCancel: (() -> Void)?) {
         guard let ad, let presenter = AdsPresenter.topViewController() else {
             action()
             return
@@ -105,6 +108,7 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
         self.ad = nil
         earned = false
         proceed = action
+        cancelled = onCancel
         ad.present(from: presenter) { [weak self] in
             self?.earned = true
         }
@@ -114,11 +118,15 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
 
     func adDidDismissFullScreenContent(_ ad: FullScreenPresentingAd) {
         let action = proceed
+        let cancel = cancelled
         proceed = nil
+        cancelled = nil
         if earned {
             policy.didEarnReward()
             earned = false
             action?()
+        } else {
+            cancel?()
         }
         preloadIfPossible()
     }
@@ -128,6 +136,7 @@ final class RewardedGate: NSObject, FullScreenContentDelegate {
         // The ad is what failed, not the person: let the export through.
         let action = proceed
         proceed = nil
+        cancelled = nil
         earned = false
         action?()
         preloadIfPossible()

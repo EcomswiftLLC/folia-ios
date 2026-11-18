@@ -37,6 +37,18 @@ struct SignTool: View {
     }
     private var selectedIndex: Int? { items.firstIndex { $0.id == selectedID } }
 
+    /// Changes whenever any placement moves, resizes, changes page or text, so a finished file is never stale.
+    private var placementsToken: String {
+        items.map { item -> String in
+            var part = "\(item.id.uuidString)|\(item.pageIndex)|\(item.center.x)|\(item.center.y)|\(item.width)"
+            switch item.content {
+            case .image(let image): part += "|img\(ObjectIdentifier(image).hashValue)"
+            case .text(let text, let size, _): part += "|txt\(size)|\(text)"
+            }
+            return part
+        }.joined(separator: ";")
+    }
+
     var body: some View {
         ToolScroll(title: "Sign and fill", subtitle: "Place your signature, a date or typed text anywhere on a PDF.") {
             PDFSourcePicker(inputs: $inputs, initialDoc: initialDoc)
@@ -77,6 +89,7 @@ struct SignTool: View {
             #endif
         }
         .onChange(of: items.count) { _, _ in runner.reset() }
+        .onChange(of: placementsToken) { _, _ in runner.reset() }
     }
 
     // MARK: Page
@@ -107,6 +120,7 @@ struct SignTool: View {
             AP.Palette.sheet
             if let pageImage {
                 Image(uiImage: pageImage).resizable().scaledToFit()
+                    .accessibilityLabel(Text("Page \(pageIndex + 1) of \(input.pageCount)"))
             } else {
                 ProgressView()
             }
@@ -127,7 +141,8 @@ struct SignTool: View {
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(AP.Palette.line, lineWidth: 1))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
         .task(id: "\(input.id.uuidString)-\(pageIndex)") {
-            let document = input.document
+            // Its own document instance: `input.document` is also drawn on the main thread by the thumbnails.
+            let document = input.workingCopy()
             let index = pageIndex
             let rendered: UIImage? = await Task.detached(priority: .userInitiated) {
                 PDFOps.images(document, pages: [index], maxSide: 1400).first.map { UIImage(cgImage: $0) }
@@ -171,8 +186,39 @@ struct SignTool: View {
                 .onEnded { _ in dragStart = nil }
         )
         .onTapGesture { selectedID = item.id }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(accessibilityName(item)))
-        .accessibilityHint(Text("Double tap to select, then use the size slider or Delete"))
+        .accessibilityValue(Text("\(Int((item.center.x * 100).rounded()))% across, \(Int((item.center.y * 100).rounded()))% down"))
+        .accessibilityHint(Text("Double tap to select. Swipe up or down for actions to move or resize it."))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityAction { selectedID = item.id }
+        .accessibilityAction(named: Text("Move up")) { nudge(item.id, dx: 0, dy: -0.02) }
+        .accessibilityAction(named: Text("Move down")) { nudge(item.id, dx: 0, dy: 0.02) }
+        .accessibilityAction(named: Text("Move left")) { nudge(item.id, dx: -0.02, dy: 0) }
+        .accessibilityAction(named: Text("Move right")) { nudge(item.id, dx: 0.02, dy: 0) }
+        .accessibilityAction(named: Text("Larger")) { resize(item.id, grow: true) }
+        .accessibilityAction(named: Text("Smaller")) { resize(item.id, grow: false) }
+    }
+
+    /// Moves a mark by a fraction of the page, for VoiceOver users who cannot drag.
+    private func nudge(_ id: UUID, dx: CGFloat, dy: CGFloat) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let center = items[index].center
+        items[index].center = CGPoint(x: min(1, max(0, center.x + dx)), y: min(1, max(0, center.y + dy)))
+        selectedID = id
+    }
+
+    private func resize(_ id: UUID, grow: Bool) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        switch items[index].content {
+        case .image:
+            let width = items[index].width + (grow ? 0.02 : -0.02)
+            items[index].width = min(0.7, max(0.08, width))
+        case .text(let text, let size, let color):
+            let newSize = min(64, max(8, size + (grow ? 2 : -2)))
+            items[index].content = .text(text, size: newSize, color: color)
+        }
+        selectedID = id
     }
 
     private func accessibilityName(_ item: PagePlacement) -> String {
@@ -304,7 +350,7 @@ struct SignTool: View {
     // MARK: Output
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let overlay = PDFOverlays.placements(items)
         selectedID = nil

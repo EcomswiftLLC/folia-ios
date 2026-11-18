@@ -9,7 +9,8 @@ import UniformTypeIdentifiers
 
 /// Apple's document camera: finds the page, takes the shot by itself and lets the person scan several pages in a row.
 struct CameraScanner: UIViewControllerRepresentable {
-    var onFinish: ([CGImage]) -> Void
+    /// Hands over the finished scan itself, so its pages can be prepared one at a time off the main thread.
+    var onFinish: (VNDocumentCameraScan) -> Void
     var onCancel: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -27,11 +28,7 @@ struct CameraScanner: UIViewControllerRepresentable {
         init(_ parent: CameraScanner) { self.parent = parent }
 
         func documentCameraViewController(_ controller: VNDocumentCameraViewController, didFinishWith scan: VNDocumentCameraScan) {
-            var images: [CGImage] = []
-            for index in 0..<scan.pageCount {
-                if let image = ScanImporter.upright(scan.imageOfPage(at: index)) { images.append(image) }
-            }
-            parent.onFinish(images)
+            parent.onFinish(scan)
         }
 
         func documentCameraViewControllerDidCancel(_ controller: VNDocumentCameraViewController) { parent.onCancel() }
@@ -76,11 +73,25 @@ final class ImportController: ObservableObject {
         showFiles = true
     }
 
-    func finishScan(_ images: [CGImage], store: DocStore) async {
-        guard !images.isEmpty else { return }
+    /// Each page is turned upright, scaled and JPEG encoded on its own, off the main thread, so a long scan never holds
+    /// every full-size picture in memory at once.
+    func finishScan(_ scan: VNDocumentCameraScan, store: DocStore) async {
         isWorking = true
         defer { isWorking = false }
-        let id = await store.importImages(images, detect: false, into: appendTo)
+        guard scan.pageCount > 0 else { return }
+        let sources: [ScanImporter.Source] = await Task.detached(priority: .userInitiated) {
+            var result: [ScanImporter.Source] = []
+            for index in 0..<scan.pageCount {
+                autoreleasepool {
+                    if let image = ScanImporter.upright(scan.imageOfPage(at: index)),
+                       let source = ScanImporter.makeSource(image, detect: false) {
+                        result.append(source)
+                    }
+                }
+            }
+            return result
+        }.value
+        let id = store.importSources(sources, into: appendTo)
         complete(id)
     }
 
@@ -90,17 +101,17 @@ final class ImportController: ObservableObject {
         guard !items.isEmpty else { return }
         isWorking = true
         defer { isWorking = false }
-        var images: [CGImage] = []
+        var sources: [ScanImporter.Source] = []
         for item in items {
             guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
-            let decoded = await Task.detached(priority: .userInitiated) { PhotoLoader.decode(data, maxPixel: 3000) }.value
-            if let decoded { images.append(decoded) }
+            let source = await Task.detached(priority: .userInitiated) { ScanImporter.makeSource(data: data, detect: true) }.value
+            if let source { sources.append(source) }
         }
-        guard !images.isEmpty else {
+        guard !sources.isEmpty else {
             message = "Those photos could not be opened."
             return
         }
-        let id = await store.importImages(images, detect: true, into: appendTo)
+        let id = store.importSources(sources, into: appendTo)
         complete(id)
     }
 
@@ -109,7 +120,7 @@ final class ImportController: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         var lastID: UUID?
-        var pictures: [CGImage] = []
+        var pictures: [ScanImporter.Source] = []
         var skippedLocked = 0
         for url in urls {
             let access = url.startAccessingSecurityScopedResource()
@@ -117,21 +128,22 @@ final class ImportController: ObservableObject {
             if url.pathExtension.lowercased() == "pdf" {
                 guard let document = PDFDocument(url: url) else { continue }
                 if document.isLocked { skippedLocked += 1; continue }
-                let pages = await Task.detached(priority: .userInitiated) { PDFOps.images(document, maxSide: 2400) }.value
+                // This document instance is used only by the background task below.
+                let pages = await Task.detached(priority: .userInitiated) { ScanImporter.makeSources(pdf: document, maxSide: 2400) }.value
                 guard !pages.isEmpty else { continue }
                 let title = url.deletingPathExtension().lastPathComponent
                 if let appendTo {
-                    lastID = await store.importImages(pages, detect: false, into: appendTo)
+                    lastID = store.importSources(pages, into: appendTo)
                 } else {
-                    lastID = await store.importImages(pages, detect: false, title: title)
+                    lastID = store.importSources(pages, title: title)
                 }
             } else if let data = try? Data(contentsOf: url) {
-                let decoded = await Task.detached(priority: .userInitiated) { PhotoLoader.decode(data, maxPixel: 3000) }.value
-                if let decoded { pictures.append(decoded) }
+                let source = await Task.detached(priority: .userInitiated) { ScanImporter.makeSource(data: data, detect: true) }.value
+                if let source { pictures.append(source) }
             }
         }
         if !pictures.isEmpty {
-            lastID = await store.importImages(pictures, detect: true, into: appendTo)
+            lastID = store.importSources(pictures, into: appendTo)
         }
         if lastID == nil {
             message = skippedLocked > 0
@@ -163,9 +175,11 @@ private struct ImportSheets: ViewModifier {
         content
             .fullScreenCover(isPresented: $importer.showCamera) {
                 CameraScanner(
-                    onFinish: { images in
+                    onFinish: { scan in
                         importer.showCamera = false
-                        Task { await importer.finishScan(images, store: store) }
+                        // Show progress straight away, before any page is prepared.
+                        importer.isWorking = true
+                        Task { await importer.finishScan(scan, store: store) }
                     },
                     onCancel: { importer.showCamera = false }
                 )

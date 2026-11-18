@@ -335,4 +335,55 @@ final class FoliaTests: XCTestCase {
         XCTAssertTrue(OCREngine.plainText(page.ocr ?? []).uppercased().contains("RENTAL"))
         XCTAssertFalse(store.doc(id)!.title.hasPrefix("Scan "), "the first line of text becomes the title")
     }
+
+    // MARK: library file
+
+    func testRecordsDecodeWithMissingFieldsAndUnknownFilter() throws {
+        let pageID = UUID()
+        let json = """
+        [{"title": "Old lease", "pages": [{"id": "\(pageID.uuidString)", "filter": "sepia"}, {"id": 42}]}]
+        """
+        let docs = try JSONDecoder().decode([DocRecord].self, from: Data(json.utf8))
+        XCTAssertEqual(docs.count, 1)
+        let doc = docs[0]
+        XCTAssertEqual(doc.title, "Old lease")
+        XCTAssertFalse(doc.autoTitle)
+        XCTAssertEqual(doc.pages.count, 2, "a damaged field falls back to its default instead of dropping the page")
+        let page = doc.pages[0]
+        XCTAssertEqual(page.id, pageID)
+        XCTAssertEqual(page.filter, .auto, "an unknown look falls back to Auto")
+        XCTAssertNil(page.quad)
+        XCTAssertNil(page.ocr)
+        XCTAssertEqual(page.quarterTurns, 0)
+        XCTAssertEqual(page.version, 0)
+
+        let empty = try JSONDecoder().decode(PageRecord.self, from: Data("{}".utf8))
+        XCTAssertEqual(empty.filter, .auto)
+        let roundTrip = try JSONDecoder().decode([DocRecord].self, from: JSONEncoder().encode(docs))
+        XCTAssertEqual(roundTrip, docs)
+    }
+
+    @MainActor
+    func testCorruptLibraryIsPreservedAndPageFilesKept() throws {
+        let storage = tempStorage()
+        storage.prepare()
+        let damaged = Data("{ this is not a library".utf8)
+        try damaged.write(to: storage.indexURL)
+        let pageFile = storage.sourceURL(UUID())
+        try Data("jpeg".utf8).write(to: pageFile)
+
+        let store = DocStore(storage: storage)
+        XCTAssertTrue(store.docs.isEmpty)
+        XCTAssertTrue(store.indexWasDamaged)
+        let preserved = storage.root.appendingPathComponent(DocStore.corruptIndexName)
+        XCTAssertEqual(try Data(contentsOf: preserved), damaged, "the damaged file is kept as library.corrupt.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pageFile.path), "page files of the damaged library are not removed")
+
+        let source = try XCTUnwrap(ScanImporter.makeSource(makeImage(width: 300, height: 400), detect: false))
+        XCTAssertNotNil(store.insert([source], title: "Fresh"))
+        XCTAssertTrue(store.lastSaveSucceeded)
+        XCTAssertEqual(try Data(contentsOf: preserved), damaged, "saving a new library never overwrites the preserved copy")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pageFile.path), "no clean-up in the session that found the damage")
+        XCTAssertEqual(DocStore(storage: storage).docs.map(\.title), ["Fresh"])
+    }
 }

@@ -87,9 +87,31 @@ extension View {
         background(AP.Palette.lens.ignoresSafeArea())
     }
 
-    /// Editorial headline treatment.
+    /// Editorial headline treatment. The size follows Dynamic Type, relative to Large Title.
     func apDisplay(_ size: CGFloat = 38) -> some View {
-        font(AP.Font.display(size)).tracking(-0.6).foregroundStyle(AP.Palette.paper)
+        modifier(APScaledSerif(size: size, weight: .regular, relativeTo: .largeTitle))
+            .tracking(-0.6)
+            .foregroundStyle(AP.Palette.paper)
+    }
+
+    /// Serif title treatment that follows Dynamic Type, relative to Title 2.
+    func apTitle(_ size: CGFloat = 24) -> some View {
+        modifier(APScaledSerif(size: size, weight: .medium, relativeTo: .title2))
+    }
+}
+
+/// A fixed-design serif whose point size scales with the person's text size setting.
+struct APScaledSerif: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    private let weight: SwiftUI.Font.Weight
+
+    init(size: CGFloat, weight: SwiftUI.Font.Weight, relativeTo style: SwiftUI.Font.TextStyle) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: style)
+        self.weight = weight
+    }
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: size, weight: weight, design: .serif))
     }
 }
 

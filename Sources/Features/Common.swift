@@ -41,7 +41,7 @@ struct EmptyStateView: View {
                 .font(.system(size: 38, weight: .light))
                 .foregroundStyle(AP.Palette.brass)
                 .accessibilityHidden(true)
-            Text(title).font(AP.Font.title(22)).foregroundStyle(AP.Palette.paper).multilineTextAlignment(.center)
+            Text(title).apTitle(22).foregroundStyle(AP.Palette.paper).multilineTextAlignment(.center)
             Text(message).font(AP.Font.callout).foregroundStyle(AP.Palette.mist).multilineTextAlignment(.center)
         }
         .frame(maxWidth: 320)
@@ -90,12 +90,19 @@ struct PageThumbnail: View {
     var pixels: Int = 480
 
     @State private var image: UIImage?
+    /// True when the page could not be drawn (for example its stored picture is missing), so no endless spinner shows.
+    @State private var failed = false
 
     var body: some View {
         ZStack {
             AP.Palette.sheet
             if let image {
                 Image(uiImage: image).resizable().scaledToFit()
+            } else if failed {
+                Image(systemName: "doc")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(AP.Palette.mist)
+                    .accessibilityLabel(Text("Page picture unavailable"))
             } else {
                 ProgressView()
             }
@@ -110,7 +117,12 @@ struct PageThumbnail: View {
         let rendered: UIImage? = await Task.detached(priority: .userInitiated) {
             storage.render(snapshot, maxSide: side, decodeSide: max(side, 900)).map { UIImage(cgImage: $0) }
         }.value
-        if let rendered { image = rendered }
+        if let rendered {
+            image = rendered
+            failed = false
+        } else if image == nil {
+            failed = true
+        }
     }
 }
 
@@ -219,7 +231,7 @@ final class ZoomScrollView: UIScrollView {
 
 // MARK: - Export: share, save to Files, save to Photos, print
 
-/// Every way out of Folia goes through here. Each one is paid for by one rewarded ad the person chooses to watch
+/// Every way out of Folia goes through here. Saving, sharing or printing asks the person to watch one short rewarded ad
 /// (see `RewardedGate`); with no ad ready it is simply free.
 struct FoliaExportBar: View {
     let files: [ExportFile]
@@ -234,6 +246,17 @@ struct FoliaExportBar: View {
         case idle, saving
         case saved(String)
         case failed(String)
+        case cancelled
+    }
+
+    private static let cancelledText = "Export cancelled. Watch the short ad to export."
+
+    /// Asks the rewarded gate first. "Not now" or closing the ad early shows a short note instead of exporting.
+    private func gated(_ action: @escaping () -> Void) {
+        if status == .cancelled { status = .idle }
+        RewardedGate.shared.requestExport(action, onCancel: {
+            withAnimation(.easeOut(duration: 0.2)) { status = .cancelled }
+        })
     }
 
     private var allImages: Bool { !files.isEmpty && files.allSatisfy { $0.isImage } }
@@ -242,7 +265,7 @@ struct FoliaExportBar: View {
     var body: some View {
         VStack(spacing: AP.Space.s) {
             Button {
-                RewardedGate.shared.requestExport { share() }
+                gated { share() }
             } label: {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
@@ -250,7 +273,7 @@ struct FoliaExportBar: View {
 
             HStack(spacing: AP.Space.s) {
                 Button {
-                    RewardedGate.shared.requestExport { saveToFiles() }
+                    gated { saveToFiles() }
                 } label: {
                     Label("Files", systemImage: "folder")
                 }
@@ -258,7 +281,7 @@ struct FoliaExportBar: View {
 
                 if allImages {
                     Button {
-                        RewardedGate.shared.requestExport { Task { await saveToPhotos() } }
+                        gated { Task { await saveToPhotos() } }
                     } label: {
                         HStack(spacing: 6) {
                             if status == .saving { ProgressView() }
@@ -271,7 +294,7 @@ struct FoliaExportBar: View {
 
                 if canPrint {
                     Button {
-                        RewardedGate.shared.requestExport { PrintHelper.print(files) }
+                        gated { PrintHelper.print(files) }
                     } label: {
                         Label("Print", systemImage: "printer")
                     }
@@ -282,10 +305,21 @@ struct FoliaExportBar: View {
             switch status {
             case .saved(let text): StatusLine(text: text, tone: .success)
             case .failed(let text): StatusLine(text: text, tone: .failure)
+            case .cancelled:
+                StatusLine(text: Self.cancelledText, tone: .neutral)
+                    .transition(.opacity)
             default: EmptyView()
             }
         }
         .disabled(files.isEmpty)
+        .task(id: status) {
+            // The cancelled note is a hint, not a state: it fades away after a few seconds.
+            guard status == .cancelled else { return }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if !Task.isCancelled, status == .cancelled {
+                withAnimation(.easeOut(duration: 0.3)) { status = .idle }
+            }
+        }
         .sheet(isPresented: $showShare) {
             ShareSheet(urls: shareURLs)
                 .presentationDetents([.medium, .large])

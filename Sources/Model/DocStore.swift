@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import ImageIO
+import PDFKit
 
 // MARK: - Records
 
@@ -28,6 +29,45 @@ struct DocRecord: Codable, Identifiable, Equatable {
     /// All recognised text of the document, page by page.
     var searchText: String {
         pages.compactMap { $0.ocr }.map { OCREngine.plainText($0) }.joined(separator: "\n")
+    }
+}
+
+// Tolerant reading: a record written by an older or newer version, or with one damaged field, still opens.
+// Kept in extensions so the memberwise initialisers stay available.
+
+extension PageRecord {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
+        let rawFilter: String? = (try? c.decodeIfPresent(String.self, forKey: .filter)) ?? nil
+        filter = rawFilter.flatMap { ScanFilter(rawValue: $0) } ?? .auto
+        quad = (try? c.decodeIfPresent(Quad.self, forKey: .quad)) ?? nil
+        quarterTurns = (try? c.decodeIfPresent(Int.self, forKey: .quarterTurns)) ?? 0
+        ocr = (try? c.decodeIfPresent([OCRLine].self, forKey: .ocr)) ?? nil
+        version = (try? c.decodeIfPresent(Int.self, forKey: .version)) ?? 0
+    }
+}
+
+extension DocRecord {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? "Untitled scan"
+        autoTitle = (try? c.decodeIfPresent(Bool.self, forKey: .autoTitle)) ?? false
+        let created: Date = (try? c.decodeIfPresent(Date.self, forKey: .createdAt)) ?? Date()
+        createdAt = created
+        modifiedAt = (try? c.decodeIfPresent(Date.self, forKey: .modifiedAt)) ?? created
+        let lossy: [LossyDecodable<PageRecord>]? = (try? c.decodeIfPresent([LossyDecodable<PageRecord>].self, forKey: .pages)) ?? nil
+        pages = (lossy ?? []).compactMap { $0.value }
+    }
+}
+
+/// Decodes one element of an array, or nil when that element is damaged, so one bad entry does not lose the rest.
+struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }
 
@@ -84,6 +124,43 @@ enum ScanImporter {
         return Source(data: data, quad: quad)
     }
 
+    /// Prepares pictures one at a time, so only one full-size picture is being worked on at once. Call off the main thread.
+    static func makeSources(_ images: [CGImage], detect: Bool) -> [Source] {
+        var sources: [Source] = []
+        for image in images {
+            autoreleasepool {
+                if let source = makeSource(image, detect: detect) { sources.append(source) }
+            }
+        }
+        return sources
+    }
+
+    /// Decodes a picture file and prepares it. Call off the main thread.
+    static func makeSource(data: Data, detect: Bool) -> Source? {
+        var source: Source?
+        autoreleasepool {
+            if let image = PhotoLoader.decode(data, maxPixel: 3000) {
+                source = makeSource(image, detect: detect)
+            }
+        }
+        return source
+    }
+
+    /// Draws and prepares the pages of a PDF one at a time. Call off the main thread, on a document no other
+    /// thread is using.
+    static func makeSources(pdf document: PDFDocument, maxSide: CGFloat = 2400) -> [Source] {
+        var sources: [Source] = []
+        for index in 0..<document.pageCount {
+            autoreleasepool {
+                if let image = PDFOps.images(document, pages: [index], maxSide: maxSide).first,
+                   let source = makeSource(image, detect: false) {
+                    sources.append(source)
+                }
+            }
+        }
+        return sources
+    }
+
     static func upright(_ image: UIImage) -> CGImage? {
         if image.imageOrientation == .up, let cg = image.cgImage { return cg }
         let format = UIGraphicsImageRendererFormat()
@@ -104,6 +181,8 @@ final class DocStore: ObservableObject {
     @Published private(set) var docs: [DocRecord] = []
 
     let storage: PageStorage
+    /// Text recognition waiting to run after a crop or rotation, per document.
+    private var pendingRecognition: [UUID: Task<Void, Never>] = [:]
 
     init(storage: PageStorage = .standard) {
         self.storage = storage
@@ -168,11 +247,17 @@ final class DocStore: ObservableObject {
         return record.id
     }
 
-    /// Reads pictures off the main thread, then stores them.
+    /// Prepares pictures off the main thread, one at a time, then stores them.
     func importImages(_ images: [CGImage], detect: Bool, into docID: UUID? = nil, title: String? = nil) async -> UUID? {
         let sources: [ScanImporter.Source] = await Task.detached(priority: .userInitiated) {
-            images.compactMap { ScanImporter.makeSource($0, detect: detect) }
+            ScanImporter.makeSources(images, detect: detect)
         }.value
+        return importSources(sources, into: docID, title: title)
+    }
+
+    /// Stores captures that are already prepared (scaled and JPEG encoded) and starts reading their text.
+    @discardableResult
+    func importSources(_ sources: [ScanImporter.Source], into docID: UUID? = nil, title: String? = nil) -> UUID? {
         let id = insert(sources, title: title, into: docID)
         if let id { Task { await self.recognizeText(docID: id) } }
         return id
@@ -194,11 +279,35 @@ final class DocStore: ObservableObject {
         let before = docs[d].pages[p]
         change(&docs[d].pages[p])
         var after = docs[d].pages[p]
-        if after.quad != before.quad || after.quarterTurns != before.quarterTurns { after.ocr = nil }
+        let geometryChanged = after.quad != before.quad || after.quarterTurns != before.quarterTurns
+        if geometryChanged { after.ocr = nil }
         after.version = before.version + 1
         docs[d].pages[p] = after
         docs[d].modifiedAt = Date()
         save()
+        if geometryChanged { scheduleRecognition(docID) }
+    }
+
+    /// Reads the text again shortly after crop or rotation changed, so search keeps finding the page. Rotating
+    /// several times in a row starts only one pass.
+    private func scheduleRecognition(_ docID: UUID) {
+        pendingRecognition[docID]?.cancel()
+        pendingRecognition[docID] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingRecognition[docID] = nil
+            await self.recognizeText(docID: docID)
+        }
+    }
+
+    /// Reads text for documents whose pages have none yet (for example after an edit just before the app closed).
+    /// One document at a time, at low priority.
+    private func recognizeMissingText() async {
+        let ids = docs.filter { doc in doc.pages.contains { $0.ocr == nil } }.map(\.id)
+        for id in ids {
+            if Task.isCancelled { return }
+            await recognizeText(docID: id)
+        }
     }
 
     func rotate(_ docID: UUID, _ pageID: UUID, by turns: Int) {
@@ -302,17 +411,18 @@ final class DocStore: ObservableObject {
                 guard let image = storage.render(snapshot, maxSide: 2000) else { return [] }
                 return OCREngine.recognize(image)
             }.value
-            setOCR(docID, pageID: page.id, lines: lines, expectedVersion: snapshot.version)
+            setOCR(docID, pageID: page.id, lines: lines, expected: snapshot)
         }
         applyAutoTitle(docID)
     }
 
-    private func setOCR(_ docID: UUID, pageID: UUID, lines: [OCRLine], expectedVersion: Int) {
+    private func setOCR(_ docID: UUID, pageID: UUID, lines: [OCRLine], expected: PageRecord) {
         guard let d = docs.firstIndex(where: { $0.id == docID }),
               let p = docs[d].pages.firstIndex(where: { $0.id == pageID }) else { return }
-        // The page was edited while text was being read: its geometry may have changed, so drop this result.
-        // The next call reads it again.
-        guard docs[d].pages[p].version == expectedVersion else { return }
+        // Crop or rotation changed while the text was being read: the positions no longer fit, so drop this
+        // result (the scheduled pass reads it again). A new look (filter) does not move text, so it is kept.
+        let current = docs[d].pages[p]
+        guard current.quad == expected.quad, current.quarterTurns == expected.quarterTurns else { return }
         docs[d].pages[p].ocr = lines
         save()
     }
@@ -337,14 +447,82 @@ final class DocStore: ObservableObject {
 
     // MARK: Saving
 
+    /// True when library.json could not be read or decoded this session. Unreferenced page files are then kept,
+    /// because they may belong to documents in the preserved copy.
+    private(set) var indexWasDamaged = false
+    /// True while saving would overwrite a library file that could not be read and was not preserved.
+    private var saveBlocked = false
+    /// True when library.json exists but could not be opened at all this session.
+    private var indexUnreadable = false
+    /// False when the most recent save failed.
+    private(set) var lastSaveSucceeded = true
+
+    static let corruptIndexName = "library.corrupt.json"
+    private var saveFailedMarkerURL: URL { storage.root.appendingPathComponent("save-failed.marker") }
+
     private func load() {
-        guard let data = try? Data(contentsOf: storage.indexURL),
-              let decoded = try? JSONDecoder().decode([DocRecord].self, from: data) else { return }
-        docs = decoded
-        removeOrphans()
+        let fm = FileManager.default
+        let url = storage.indexURL
+        // Nothing saved yet: a fresh install. Page files are left alone either way.
+        guard fm.fileExists(atPath: url.path) else { return }
+        guard let data = try? Data(contentsOf: url) else {
+            // The file is there but cannot be read right now (for example still protected). Never overwrite it.
+            indexWasDamaged = true
+            indexUnreadable = true
+            saveBlocked = true
+            return
+        }
+        let decoded: [LossyDecodable<DocRecord>]
+        do {
+            decoded = try JSONDecoder().decode([LossyDecodable<DocRecord>].self, from: data)
+        } catch {
+            // Damaged beyond reading: move it aside so it can be recovered, and start an empty library.
+            indexWasDamaged = true
+            if !preserveDamagedIndex(move: true) { saveBlocked = true }
+            return
+        }
+        docs = decoded.compactMap { $0.value }
+        if docs.count < decoded.count {
+            // Some documents could not be read. Keep a copy of the original before anything is saved over it.
+            indexWasDamaged = true
+            if !preserveDamagedIndex(move: false) { saveBlocked = true }
+        }
+        let previousSaveFailed = fm.fileExists(atPath: saveFailedMarkerURL.path)
+        if !indexWasDamaged && !previousSaveFailed {
+            removeOrphans()
+        }
+        if !docs.isEmpty {
+            Task { [weak self] in
+                // Let the library appear first, then catch up on text that was never read.
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await self?.recognizeMissingText()
+            }
+        }
+    }
+
+    /// Keeps the damaged library file as library.corrupt.json (or a dated name when that exists already).
+    @discardableResult
+    private func preserveDamagedIndex(move: Bool) -> Bool {
+        let fm = FileManager.default
+        var target = storage.root.appendingPathComponent(Self.corruptIndexName)
+        if fm.fileExists(atPath: target.path) {
+            let stamp = Int(Date().timeIntervalSince1970)
+            target = storage.root.appendingPathComponent("library.corrupt-\(stamp).json")
+        }
+        do {
+            if move {
+                try fm.moveItem(at: storage.indexURL, to: target)
+            } else {
+                try fm.copyItem(at: storage.indexURL, to: target)
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func removeOrphans() {
+        guard !indexWasDamaged, lastSaveSucceeded else { return }
         let used = Set(docs.flatMap { $0.pages.map { "\($0.id.uuidString).jpg" } })
         let files = (try? FileManager.default.contentsOfDirectory(atPath: storage.pagesDirectory.path)) ?? []
         for name in files where name.hasSuffix(".jpg") && !used.contains(name) {
@@ -352,9 +530,31 @@ final class DocStore: ObservableObject {
         }
     }
 
-    private func save() {
-        guard let data = try? JSONEncoder().encode(docs) else { return }
-        try? data.write(to: storage.indexURL, options: .atomic)
+    @discardableResult
+    private func save() -> Bool {
+        if saveBlocked {
+            // A library that could not be read is never written over in this session. A damaged one is written
+            // over only once a copy of it was kept.
+            let fileStillThere = FileManager.default.fileExists(atPath: storage.indexURL.path)
+            if indexUnreadable || (fileStillThere && !preserveDamagedIndex(move: false)) {
+                lastSaveSucceeded = false
+                return false
+            }
+            saveBlocked = false
+        }
+        do {
+            let data = try JSONEncoder().encode(docs)
+            try data.write(to: storage.indexURL, options: .atomic)
+            if !lastSaveSucceeded || FileManager.default.fileExists(atPath: saveFailedMarkerURL.path) {
+                try? FileManager.default.removeItem(at: saveFailedMarkerURL)
+            }
+            lastSaveSucceeded = true
+            return true
+        } catch {
+            lastSaveSucceeded = false
+            try? Data().write(to: saveFailedMarkerURL, options: .atomic)
+            return false
+        }
     }
 }
 

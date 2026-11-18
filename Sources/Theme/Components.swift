@@ -73,7 +73,7 @@ struct APSectionTitle: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(AP.Font.title(22))
+            .apTitle(22)
             .foregroundStyle(AP.Palette.paper)
             .accessibilityAddTraits(.isHeader)
     }

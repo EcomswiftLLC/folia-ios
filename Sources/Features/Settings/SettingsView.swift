@@ -1,9 +1,8 @@
 import SwiftUI
-import StoreKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.requestReview) private var requestReview
+    @Environment(\.openURL) private var openURL
     @ObservedObject private var ads = AdsManager.shared
 
     @AppStorage(FoliaPrefs.filterKey) private var filterRaw = ScanFilter.auto.rawValue
@@ -13,6 +12,7 @@ struct SettingsView: View {
 
     private let privacyURL = URL(string: "https://ecomswiftllc.github.io/folia/privacy/")!
     private let supportURL = URL(string: "https://ecomswiftllc.github.io/folia/support/")!
+    private let reviewURL = URL(string: "https://apps.apple.com/app/id6836099515?action=write-review")!
 
     var body: some View {
         NavigationStack {
@@ -70,7 +70,7 @@ struct SettingsView: View {
                                 row("Ad privacy choices", symbol: "hand.raised") { ads.presentPrivacyOptions() }
                                 APHairline()
                             }
-                            row("Rate Folia", symbol: "star") { requestReview() }
+                            row("Rate Folia", symbol: "star") { openURL(reviewURL) }
                             APHairline()
                             link("Support", symbol: "questionmark.circle", url: supportURL)
                             APHairline()
@@ -81,9 +81,10 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("Folia is supported by ads. When you save or share a document you can watch one short ad. Version \(version)")
+                    Text("Folia is free and supported by ads. Saving, sharing or printing asks you to watch one short ad (free if no ad is available). Version \(version)")
                         .font(AP.Font.caption)
                         .foregroundStyle(AP.Palette.mist)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, AP.Space.m)
                 .padding(.bottom, AP.Space.xl)
@@ -155,45 +156,54 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Spacer(minLength: AP.Space.xl)
-            FoliaMark(lineWidth: 2)
-                .frame(width: 92, height: 112)
-                .offset(y: appeared ? 0 : 14)
-                .opacity(appeared ? 1 : 0)
-                .padding(.bottom, AP.Space.l)
-            Text("Paper in,\nPDF out.")
-                .apDisplay(50)
-                .lineSpacing(-2)
-            Text("Scan, sign and tidy documents with nothing to pay and nothing uploaded.")
-                .font(AP.Font.body)
-                .foregroundStyle(AP.Palette.mist)
-                .padding(.top, AP.Space.m)
-                .frame(maxWidth: 340, alignment: .leading)
-            VStack(alignment: .leading, spacing: 0) {
-                APHairline()
-                line("camera.viewfinder", "Scan in seconds", "Edges found, light fixed, pages saved as PDF.")
-                APHairline()
-                line("signature", "Sign, merge, compress", "Twelve tools for the PDFs you already have.")
-                APHairline()
-                line("lock", "Private by design", "Documents and text recognition stay on this device.")
-                APHairline()
+        GeometryReader { geo in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: AP.Space.xl)
+                    FoliaMark(lineWidth: 2)
+                        .frame(width: 92, height: 112)
+                        .offset(y: appeared ? 0 : 14)
+                        .opacity(appeared ? 1 : 0)
+                        .padding(.bottom, AP.Space.l)
+                    Text("Paper in,\nPDF out.")
+                        .apDisplay(50)
+                        .lineSpacing(-2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Scan, sign and tidy documents with nothing to pay and nothing uploaded.")
+                        .font(AP.Font.body)
+                        .foregroundStyle(AP.Palette.mist)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, AP.Space.m)
+                        .frame(maxWidth: 340, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 0) {
+                        APHairline()
+                        line("camera.viewfinder", "Scan in seconds", "Edges found, light fixed, pages saved as PDF.")
+                        APHairline()
+                        line("signature", "Sign, merge, compress", "Twelve tools for the PDFs you already have.")
+                        APHairline()
+                        line("lock", "Private by design", "Documents and text recognition stay on this device.")
+                        APHairline()
+                    }
+                    .padding(.top, AP.Space.xl)
+                    Spacer(minLength: AP.Space.l)
+                    Text("Free, supported by ads. Saving, sharing or printing asks you to watch one short ad (free if no ad is available).")
+                        .font(AP.Font.caption)
+                        .foregroundStyle(AP.Palette.mist)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, AP.Space.s)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.3)) { appState.hasOnboarded = true }
+                    } label: {
+                        Text("Get started")
+                    }
+                    .buttonStyle(.apPrimaryWide)
+                    .padding(.bottom, AP.Space.l)
+                }
+                .padding(.horizontal, AP.Space.l)
+                .frame(minHeight: geo.size.height, alignment: .top)
             }
-            .padding(.top, AP.Space.xl)
-            Spacer()
-            Text("Free, supported by ads. You can watch one short ad when you save or share.")
-                .font(AP.Font.caption)
-                .foregroundStyle(AP.Palette.mist)
-                .padding(.bottom, AP.Space.s)
-            Button {
-                withAnimation(.easeInOut(duration: 0.3)) { appState.hasOnboarded = true }
-            } label: {
-                Text("Get started")
-            }
-            .buttonStyle(.apPrimaryWide)
-            .padding(.bottom, AP.Space.l)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .padding(.horizontal, AP.Space.l)
         .apScreen()
         .onAppear {
             if reduceMotion { appeared = true } else { withAnimation(.easeOut(duration: 0.9)) { appeared = true } }
@@ -208,9 +218,13 @@ struct OnboardingView: View {
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(AP.Font.headline).foregroundStyle(AP.Palette.paper)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(detail).font(AP.Font.callout).foregroundStyle(AP.Palette.mist)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
         }
         .padding(.vertical, 14)
         .accessibilityElement(children: .combine)

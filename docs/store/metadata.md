@@ -7,7 +7,7 @@ Naming rule (owner, always): search keywords first, brand last, one colon.
 | Name | PDF Scanner & Editor: Folia | 30 (is 27) |
 | Subtitle | Scan, Sign, Merge, Compress | 30 (is 27) |
 | Home screen name | Folia | |
-| Keywords | document,ocr,text,split,password,lock,watermark,id card,jpg,converter,copier,receipt,paper,camera,form | 100 |
+| Keywords | document,ocr,text,split,password,lock,watermark,id card,jpg,converter,copier,receipt,paper | 100 |
 | Category | Productivity (secondary: Business) | |
 | Price | Free, ads (AdMob banner on Documents + opt-in rewarded ad before export) | |
 | Bundle id | com.ecomswift.folia | |

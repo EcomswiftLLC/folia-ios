@@ -21,6 +21,22 @@ enum ScanFilter: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    /// Short name for the small look tiles in the page editor, so it never truncates.
+    var shortTitle: String {
+        switch self {
+        case .bw: return "B&W"
+        default: return title
+        }
+    }
+
+    /// Spoken name for VoiceOver.
+    var accessibilityTitle: String {
+        switch self {
+        case .bw: return "Black and white"
+        default: return title
+        }
+    }
+
     var symbol: String {
         switch self {
         case .original: return "photo"
@@ -73,6 +89,10 @@ enum PageRenderer {
     static let context = CIContext(options: [.cacheIntermediates: false])
     private static let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
 
+    /// Filters are tuned for a readable page. On a tiny picture the text is averaged into grey before the filter
+    /// runs, and the clean-up then whitens it away, so small renders are filtered at this size and scaled down after.
+    static let minimumFilterSide = 900
+
     /// Turns a capture into the page the person sees: straighten (perspective), filter, rotate.
     static func render(_ source: CGImage, filter: ScanFilter, quad: Quad?, quarterTurns: Int, maxSide: Int? = nil) -> CGImage? {
         var image = CIImage(cgImage: source)
@@ -80,13 +100,13 @@ enum PageRenderer {
             image = perspective(image, quad: quad)
         }
         if let maxSide {
-            let longest = max(image.extent.width, image.extent.height)
-            if longest > CGFloat(maxSide) {
-                let scale = CGFloat(maxSide) / longest
-                image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale), highQualityDownsample: true)
-            }
+            let workSide = filter == .original ? maxSide : max(maxSide, minimumFilterSide)
+            image = downscaled(image, to: workSide)
         }
         image = apply(filter, to: image)
+        if let maxSide {
+            image = downscaled(image, to: maxSide)
+        }
         switch ((quarterTurns % 4) + 4) % 4 {
         case 1: image = image.oriented(.right)
         case 2: image = image.oriented(.down)
@@ -94,6 +114,16 @@ enum PageRenderer {
         default: break
         }
         return cgImage(image)
+    }
+
+    /// Scales the picture down so its longest side is at most `side` pixels, keeping its origin at zero.
+    private static func downscaled(_ image: CIImage, to side: Int) -> CIImage {
+        let extent = image.extent
+        let longest = max(extent.width, extent.height)
+        guard longest.isFinite, longest > CGFloat(side), side > 0 else { return image }
+        let scale = CGFloat(side) / longest
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale), highQualityDownsample: true)
+        return scaled.transformed(by: CGAffineTransform(translationX: -scaled.extent.minX, y: -scaled.extent.minY))
     }
 
     static func cgImage(_ image: CIImage) -> CGImage? {

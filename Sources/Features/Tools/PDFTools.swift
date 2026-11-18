@@ -107,7 +107,7 @@ struct MergeTool: View {
     }
 
     private func merge() {
-        let documents = inputs.map(\.document)
+        let documents = inputs.map { $0.workingCopy() }
         Task {
             await runner.run {
                 let merged = PDFOps.merge(documents)
@@ -189,7 +189,7 @@ struct SplitTool: View {
     }
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let chosen = selection.sorted()
         let wanted = mode
@@ -254,7 +254,7 @@ struct CompressTool: View {
     }
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let chosen = level
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         Task {
@@ -315,10 +315,14 @@ struct NumbersTool: View {
             }
         }
         .onChange(of: inputs.first?.id) { _, _ in runner.reset() }
+        .onChange(of: position) { _, _ in runner.reset() }
+        .onChange(of: format) { _, _ in runner.reset() }
+        .onChange(of: start) { _, _ in runner.reset() }
+        .onChange(of: skipFirst) { _, _ in runner.reset() }
     }
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let overlay = PDFOverlays.pageNumbers(
             total: document.pageCount, position: position, format: format,
@@ -401,10 +405,14 @@ struct WatermarkTool: View {
             }
         }
         .onChange(of: inputs.first?.id) { _, _ in runner.reset() }
+        .onChange(of: text) { _, _ in runner.reset() }
+        .onChange(of: tint) { _, _ in runner.reset() }
+        .onChange(of: opacity) { _, _ in runner.reset() }
+        .onChange(of: diagonal) { _, _ in runner.reset() }
     }
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let size: CGFloat = trimmed.count > 12 ? 0.07 : (trimmed.count > 7 ? 0.11 : 0.16)
         let overlay = PDFOverlays.watermark(text: trimmed, color: tint.color, opacity: opacity, sizeFraction: size, angleDegrees: diagonal ? -35 : 0)
@@ -495,7 +503,7 @@ struct LockTool: View {
     }
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let secret = password
         switch mode {
@@ -573,10 +581,12 @@ struct PDFImagesTool: View {
             }
         }
         .onChange(of: inputs.first?.id) { _, _ in runner.reset() }
+        .onChange(of: format) { _, _ in runner.reset() }
+        .onChange(of: size) { _, _ in runner.reset() }
     }
 
     private func run(_ input: PDFInput) {
-        let document = input.document
+        let document = input.workingCopy()
         let base = ExportFile.safeName(input.name, fallback: "PDF")
         let chosenFormat = format
         let side = size.side

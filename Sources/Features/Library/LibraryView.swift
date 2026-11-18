@@ -74,8 +74,12 @@ struct LibraryView: View {
                             .frame(maxWidth: .infinity)
                     } else {
                         grid
+                        // Only under real content, never on the empty or "No matches" screens, and kept clear of
+                        // the Scan bar below.
+                        CKInlineBanner()
+                            .padding(.top, AP.Space.s)
+                            .padding(.bottom, AP.Space.l)
                     }
-                    CKInlineBanner()
                 }
                 .padding(.horizontal, AP.Space.m)
                 .padding(.bottom, AP.Space.l)
@@ -239,11 +243,12 @@ struct DocCard: View {
                 Text(doc.title)
                     .font(AP.Font.headline)
                     .foregroundStyle(AP.Palette.paper)
-                    .lineLimit(1)
+                    .lineLimit(2)
                 Text("\(FoliaText.pages(doc.pages.count)) · \(FoliaText.date(doc.modifiedAt))")
                     .font(AP.Font.caption)
                     .foregroundStyle(AP.Palette.mist)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .contentShape(Rectangle())
