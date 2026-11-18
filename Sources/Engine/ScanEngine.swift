@@ -106,6 +106,10 @@ enum PageRenderer {
         image = apply(filter, to: image)
         if let maxSide {
             image = downscaled(image, to: maxSide)
+            // Thin text turns light grey when a filtered page is shrunk to a thumbnail, so darken the mid tones a little.
+            if filter != .original, maxSide <= 700 {
+                image = image.applyingFilter("CIGammaAdjust", parameters: ["inputPower": 2.4])
+            }
         }
         switch ((quarterTurns % 4) + 4) % 4 {
         case 1: image = image.oriented(.right)
