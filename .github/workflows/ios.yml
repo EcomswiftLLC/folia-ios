@@ -141,7 +141,6 @@ jobs:
             sleep 26
             xcrun simctl io "$DEST" screenshot "shots/land-$SCREEN.png" || true
           done
-          cat /tmp/*Landscape-error.txt 2>/dev/null || echo "no rotation error file"
           ls shots
       - uses: actions/upload-artifact@v4
         if: always()
