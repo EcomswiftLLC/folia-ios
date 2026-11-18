@@ -46,7 +46,7 @@ struct RootView: View {
         ZStack {
             #if DEBUG
             if let screen = DebugScreens.requested {
-                DebugScreens.view(for: screen).onAppear { DebugScreens.landscapeIfRequested() }
+                DebugScreens.view(for: screen)
             } else {
                 content
             }

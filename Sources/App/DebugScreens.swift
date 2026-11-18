@@ -7,15 +7,6 @@ import UIKit
 /// Sample pages are photographs of generated documents that CI copies into the simulator app's Documents/samples folder
 /// together with a manifest.json that lists the documents and the page corners found in each photo.
 enum DebugScreens {
-    /// `-foLandscape YES` turns an iPad simulator to landscape so CI can check wide layouts.
-    static func landscapeIfRequested() {
-        guard UserDefaults.standard.bool(forKey: "foLandscape") else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
-        }
-    }
-
     static var requested: String? {
         guard let value = UserDefaults.standard.string(forKey: "foScreen"), !value.isEmpty else { return nil }
         return value
