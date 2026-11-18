@@ -10,11 +10,19 @@ enum DebugScreens {
     /// `-foLandscape YES` turns an iPad simulator to landscape so CI can check wide layouts.
     static func landscapeIfRequested() {
         guard UserDefaults.standard.bool(forKey: "foLandscape") else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+        for delay in [1.0, 3.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape)) { error in
+                    try? "\(error)".write(toFile: "/tmp/foLandscape-error.txt", atomically: true, encoding: .utf8)
+                }
+                // Older route that the simulator still honours.
+                UIDevice.current.setValue(UIInterfaceOrientation.landscapeLeft.rawValue, forKey: "orientation")
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
         }
     }
+
 
     static var requested: String? {
         guard let value = UserDefaults.standard.string(forKey: "foScreen"), !value.isEmpty else { return nil }
