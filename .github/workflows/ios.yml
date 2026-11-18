@@ -146,3 +146,44 @@ jobs:
           name: build-logs-shots-ipad
           path: build/*.log
           if-no-files-found: ignore
+
+  ipad-landscape:
+    runs-on: macos-26
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Landscape UI tests on iPad
+        run: |
+          set -o pipefail
+          mkdir -p build
+          DEST=$(xcrun simctl list devices available | grep -E "iPad Pro 13-inch" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*//')
+          if [ -z "$DEST" ]; then DEST=$(xcrun simctl list devices available | grep -E "iPad.*13-inch" | head -1 | sed -E 's/^ *(.*) \(([0-9A-F-]{36})\).*//'); fi
+          echo "iPad simulator: $DEST"
+          xcrun simctl boot "$DEST" || true
+          xcrun simctl bootstatus "$DEST" -b || true
+          rm -rf build/ui.xcresult
+          xcodebuild test -project Folia.xcodeproj -scheme Folia -destination "id=$DEST" -only-testing:FoliaUITests -resultBundlePath build/ui.xcresult CODE_SIGNING_ALLOWED=NO | tee build/ui-test.log | grep -E "error:|Test Case|Executed|TEST " | tail -n 80
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p shots-landscape
+          xcrun xcresulttool export attachments --path build/ui.xcresult --output-path shots-landscape || true
+          ls shots-landscape | head -50
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-ipad-landscape
+          path: shots-landscape
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test-logs
+          path: build/ui-test.log
+          if-no-files-found: ignore
