@@ -82,7 +82,7 @@ enum ToolKind: String, CaseIterable, Identifiable, Hashable {
 
 struct ToolsView: View {
     @EnvironmentObject private var importer: ImportController
-    @Environment(.horizontalSizeClass) private var hSize
+    @Environment(\.horizontalSizeClass) private var hSize
 
     private var toolColumns: [GridItem] {
         hSize == .regular

@@ -5,7 +5,7 @@ struct DocumentView: View {
 
     @EnvironmentObject private var store: DocStore
     @EnvironmentObject private var importer: ImportController
-    @Environment(.horizontalSizeClass) private var hSize
+    @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.dismiss) private var dismiss
 
     @State private var showExport = false

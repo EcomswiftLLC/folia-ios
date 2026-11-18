@@ -42,7 +42,7 @@ enum LibrarySort: String, CaseIterable, Identifiable {
 struct LibraryView: View {
     @EnvironmentObject private var store: DocStore
     @EnvironmentObject private var importer: ImportController
-    @Environment(.horizontalSizeClass) private var hSize
+    @Environment(\.horizontalSizeClass) private var hSize
     @AppStorage(FoliaPrefs.sortKey) private var sortRaw = LibrarySort.newest.rawValue
 
     @State private var path = NavigationPath()
