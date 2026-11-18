@@ -73,6 +73,7 @@ struct PageEditorView: View {
                 }
                 action("Delete", "trash", destructive: true) { confirmDelete = true }
             }
+            .readableWidth(560)
             .padding(.horizontal, AP.Space.s)
         }
         .padding(.top, AP.Space.m)
