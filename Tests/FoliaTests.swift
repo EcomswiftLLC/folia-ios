@@ -505,13 +505,14 @@ final class FoliaTests: XCTestCase {
     func testImportPDFAddsPagesInBatches() async throws {
         let store = DocStore(storage: tempStorage())
         let doc = samplePDF(pages: 5)
-        let result = await store.importPDF(doc, title: "Batches", batchSize: 2)
+        // No text recognition here: it would keep running in the background while the next tests start.
+        let result = await store.importPDF(doc, title: "Batches", batchSize: 2, readText: false)
         XCTAssertEqual(result.stored, 5)
         XCTAssertEqual(result.failed, 0)
         let id = try XCTUnwrap(result.docID)
         XCTAssertEqual(store.doc(id)?.pages.count, 5, "every batch lands in the same document")
         XCTAssertEqual(store.doc(id)?.title, "Batches")
-        let more = await store.importPDF(doc, into: id, batchSize: 3)
+        let more = await store.importPDF(doc, into: id, batchSize: 3, readText: false)
         XCTAssertEqual(more.docID, id)
         XCTAssertEqual(store.doc(id)?.pages.count, 10)
         XCTAssertEqual(ScanImporter.makeSources(pdf: doc, pages: [1, 3], maxSide: 600).count, 2)

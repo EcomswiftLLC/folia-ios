@@ -299,7 +299,7 @@ final class DocStore: ObservableObject {
     /// Adds the pages of a PDF in small batches, so a long PDF never holds all its prepared pages in memory: each
     /// batch is drawn off the main thread and written to disk before the next one starts. Text recognition starts once,
     /// after the last batch. Pages that could not be drawn or stored are counted in `failed`.
-    func importPDF(_ document: PDFDocument, title: String? = nil, into docID: UUID? = nil, maxSide: CGFloat = 2400, batchSize: Int = 10) async -> InsertResult {
+    func importPDF(_ document: PDFDocument, title: String? = nil, into docID: UUID? = nil, maxSide: CGFloat = 2400, batchSize: Int = 10, readText: Bool = true) async -> InsertResult {
         var total = InsertResult()
         var target = docID
         let count = document.pageCount
@@ -319,7 +319,7 @@ final class DocStore: ObservableObject {
             if let id = part.docID { target = id }
         }
         total.docID = total.stored > 0 ? target : nil
-        if let id = total.docID { Task { await self.recognizeText(docID: id) } }
+        if readText, let id = total.docID { Task { await self.recognizeText(docID: id) } }
         return total
     }
 
