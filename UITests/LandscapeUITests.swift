@@ -26,7 +26,7 @@ final class LandscapeUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(settle))
 
         let frame = window.frame
-        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "landscape-\(screen)"
         shot.lifetime = .keepAlways
         add(shot)
